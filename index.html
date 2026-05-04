@@ -1768,33 +1768,50 @@ function parseEtsyInvoice(pages) {
 }
 
 // ============ Amazon PDF 파서 ============
+// section 속성: 'expenses' 만 거래내역에 포함됨. income/tax/transfers는 매칭은 되지만 emit 안 됨.
 const AMAZON_MAP = [
-  { kw:'Cost of Advertising', account:'광고선전비', label:'광고비' },
-  { kw:'Refund for Advertiser', account:'광고선전비', label:'광고비 환불' },
-  { kw:'FBA selling fees', account:'지급수수료', label:'FBA 판매수수료' },
-  { kw:'Selling fee refunds', account:'지급수수료', label:'판매수수료 환불' },
-  { kw:'FBA transaction fees', account:'지급수수료', label:'FBA 거래수수료' },
-  { kw:'FBA transaction fee refunds', account:'지급수수료', label:'FBA 거래수수료 환불' },
-  { kw:'Service fees', account:'지급수수료', label:'서비스 수수료' },
-  { kw:'Refund administration fees', account:'지급수수료', label:'환불 관리 수수료' },
-  { kw:'Adjustments', account:'지급수수료', label:'조정' },
-  { kw:'Other transaction fees', account:'지급수수료', label:'기타 거래수수료' },
-  { kw:'FBA inventory and inbound services fees', account:'물류비', label:'FBA 재고/입고 서비스' },
-  { kw:'Shipping label purchases', account:'물류비', label:'배송 라벨' },
-  { kw:'Carrier shipping label adjustments', account:'물류비', label:'운송사 조정' },
-  { kw:'Product, shipping, gift wrap taxes and regulatory fee collected', account:'매출세', label:'판매세 수취' },
-  { kw:'Product, shipping, gift wrap taxes and regulatory fee refunded', account:'매출세', label:'판매세 환불' },
-  { kw:'Amazon Obligated Tax and Regulatory Fee Withheld', account:'매출세', label:'아마존 원천징수' },
-  { kw:'FBA product sale refunds', account:'환불', label:'FBA 상품 환불' },
-  { kw:'Product sale refunds (non-FBA)', account:'환불', label:'비-FBA 상품 환불' },
-  { kw:'FBA product sales', account:'매출참고', label:'FBA 상품매출' },
-  { kw:'Product sales (non-FBA)', account:'매출참고', label:'비-FBA 상품매출' },
-  { kw:'FBA inventory credit', account:'매출참고', label:'FBA 재고크레딧' },
-  { kw:'Shipping credits', account:'매출참고', label:'배송 크레딧' },
-  { kw:'Shipping credit refunds', account:'매출참고', label:'배송 크레딧 환불' },
-  { kw:'Gift wrap credits', account:'매출참고', label:'선물포장 크레딧' },
-  { kw:'Promotional rebates', account:'매출참고', label:'프로모션 리베이트' },
-  { kw:'Promotional rebate refunds', account:'매출참고', label:'프로모션 환불' }
+  // === Expenses 섹션 (PDF 우상단, 비용) ===
+  { kw:'Cost of Advertising',                      section:'expenses', account:'광고선전비', label:'광고비' },
+  { kw:'Refund for Advertiser',                    section:'expenses', account:'광고선전비', label:'광고비 환불' },
+  { kw:'Seller fulfilled selling fees',            section:'expenses', account:'지급수수료', label:'셀러배송 판매수수료' },
+  { kw:'FBA selling fees',                         section:'expenses', account:'지급수수료', label:'FBA 판매수수료' },
+  { kw:'Selling fee refunds',                      section:'expenses', account:'지급수수료', label:'판매수수료 환불' },
+  { kw:'FBA transaction fee refunds',              section:'expenses', account:'지급수수료', label:'FBA 거래수수료 환불' },
+  { kw:'FBA transaction fees',                     section:'expenses', account:'지급수수료', label:'FBA 거래수수료' },
+  { kw:'Other transaction fee refunds',            section:'expenses', account:'지급수수료', label:'기타 거래수수료 환불' },
+  { kw:'Other transaction fees',                   section:'expenses', account:'지급수수료', label:'기타 거래수수료' },
+  { kw:'Service fees',                             section:'expenses', account:'지급수수료', label:'서비스 수수료' },
+  { kw:'Refund administration fees',               section:'expenses', account:'지급수수료', label:'환불 관리 수수료' },
+  { kw:'Adjustments',                              section:'expenses', account:'지급수수료', label:'조정' },
+  { kw:'Liquidations fees',                        section:'expenses', account:'지급수수료', label:'청산 수수료' },
+  { kw:'FBA inventory and inbound services fees',  section:'expenses', account:'물류비',     label:'FBA 재고/입고 서비스' },
+  { kw:'Shipping label refunds',                   section:'expenses', account:'물류비',     label:'배송 라벨 환불' },
+  { kw:'Shipping label purchases',                 section:'expenses', account:'물류비',     label:'배송 라벨 구매' },
+  { kw:'Carrier shipping label adjustments',       section:'expenses', account:'물류비',     label:'운송사 라벨 조정' },
+
+  // === Tax 섹션 (PDF 우하단) — 거래내역 비포함 ===
+  { kw:'Product, shipping, gift wrap taxes and regulatory fee collected', section:'tax',     account:'매출세', label:'판매세 수취' },
+  { kw:'Product, shipping, gift wrap taxes and regulatory fee refunded', section:'tax',      account:'매출세', label:'판매세 환불' },
+  { kw:'Amazon Obligated Tax and Regulatory Fee Withheld',               section:'tax',      account:'매출세', label:'아마존 원천징수' },
+
+  // === Income 섹션 (PDF 좌상단) — 거래내역 비포함 ===
+  { kw:'FBA product sale refunds',          section:'income', account:'환불',     label:'FBA 상품 환불' },
+  { kw:'Product sale refunds (non-FBA)',    section:'income', account:'환불',     label:'비-FBA 상품 환불' },
+  { kw:'A-to-z Guarantee claims',           section:'income', account:'환불',     label:'A-to-z 클레임' },
+  { kw:'Chargebacks',                       section:'income', account:'환불',     label:'차지백' },
+  { kw:'SAFE-T reimbursement',              section:'income', account:'환불',     label:'SAFE-T 환급' },
+  { kw:'Amazon Shipping Reimbursement',     section:'income', account:'환불',     label:'아마존 배송 환급' },
+  { kw:'FBA product sales',                 section:'income', account:'매출참고', label:'FBA 상품매출' },
+  { kw:'Product sales (non-FBA)',           section:'income', account:'매출참고', label:'비-FBA 상품매출' },
+  { kw:'FBA liquidation proceeds adjustments', section:'income', account:'매출참고', label:'청산 정산조정' },
+  { kw:'FBA liquidation proceeds',          section:'income', account:'매출참고', label:'청산 정산금' },
+  { kw:'FBA inventory credit',              section:'income', account:'매출참고', label:'FBA 재고크레딧' },
+  { kw:'Shipping credit refunds',           section:'income', account:'매출참고', label:'배송 크레딧 환불' },
+  { kw:'Shipping credits',                  section:'income', account:'매출참고', label:'배송 크레딧' },
+  { kw:'Gift wrap credit refunds',          section:'income', account:'매출참고', label:'선물포장 크레딧 환불' },
+  { kw:'Gift wrap credits',                 section:'income', account:'매출참고', label:'선물포장 크레딧' },
+  { kw:'Promotional rebate refunds',        section:'income', account:'매출참고', label:'프로모션 환불' },
+  { kw:'Promotional rebates',               section:'income', account:'매출참고', label:'프로모션 리베이트' }
 ];
 const AMAZON_EXCLUDE = ['Transfers to bank', 'Failed transfers', 'Disburse to', 'Charges to credit'];
 
@@ -1827,8 +1844,9 @@ function parseAmazonStatement(pages) {
       if (itemName.includes(item.kw)) { cls = item; break; }
     }
     if (!cls) continue;
-    // 사용자 요청: Income(매출참고) 항목은 거래내역에 표시하지 않음 — 비용 항목만 표시
-    if (cls.account === '매출참고') continue;
+    // 사용자 요청: PDF의 Expenses 섹션(우상단 비용) 항목만 거래내역에 표시.
+    // Income/Tax/Transfers 섹션 항목은 모두 제외 (FBA 상품 환불, 판매세 수취, 원천징수 등)
+    if (cls.section !== 'expenses') continue;
     txns.push({
       id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
       date: endDate, account: cls.account, name: cls.label,
