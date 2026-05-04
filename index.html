@@ -378,10 +378,11 @@ const PLATFORMS = [
   { id: 'shopee_th', name: 'Shopee 태국',          currency: 'THB', group: 'shopee' },
   { id: 'shopee_br', name: 'Shopee 브라질',        currency: 'BRL', group: 'shopee' },
   { id: 'shopee_mx', name: 'Shopee 멕시코',        currency: 'MXN', group: 'shopee' },
-  { id: 'amazon',    name: 'Amazon',              currency: 'USD', group: 'amazon', placeholder: true },
-  { id: 'ebay',      name: 'eBay',                currency: 'USD', group: 'other', placeholder: true },
-  { id: 'rakuten',   name: 'Rakuten',             currency: 'JPY', group: 'other', placeholder: true },
-  { id: 'lazada',    name: 'Lazada',              currency: 'THB', group: 'other', placeholder: true },
+  { id: 'amazon',    name: 'Amazon',              currency: 'USD', group: 'amazon' },
+  { id: 'ebay',      name: 'eBay',                currency: 'USD', group: 'other' },
+  { id: 'rakuten',   name: 'Rakuten',             currency: 'JPY', group: 'other' },
+  { id: 'lazada',    name: 'Lazada',              currency: 'THB', group: 'other' },
+  { id: 'etsy',      name: 'Etsy',                currency: 'USD', group: 'other' },
 ];
 
 const CURRENCY_INFO = {
@@ -1430,10 +1431,7 @@ if (window.pdfjsLib) {
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 }
 
-// 미접수 placeholder 해제 (자료 업로드 가능하게)
-PLATFORMS.forEach(p => {
-  if (p.id === 'amazon' || p.id === 'ebay') p.placeholder = false;
-});
+// 미접수 placeholder 해제 (자료 업로드 가능하게) — 모든 플랫폼 활성화 완료
 
 // PDF에서 페이지별 텍스트 추출
 async function extractPdfText(file) {
@@ -1526,6 +1524,8 @@ function parseShopeeIncomeStatement(pages) {
       const amount = parseFloat(m[2].replace(/,/g, ''));
       if (isNaN(amount) || itemName.length < 3) continue;
       const cls = classifyShopeeItem(itemName);
+      // 사용자 요청: Income(매출참고) 항목은 거래내역에 표시하지 않음 — 비용 항목만 표시
+      if (cls.account === '매출참고') continue;
       txns.push({
         id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
         date, account: cls.account, name: cls.label || itemName,
@@ -1533,6 +1533,111 @@ function parseShopeeIncomeStatement(pages) {
         memo: itemName,
         _route: COUNTRY_TO_PLATFORM[currency] || null
       });
+    }
+  }
+  return txns;
+}
+
+// ============ Etsy Invoice 파서 ============
+// 양식: Etsy Ireland UC 발행 월간 청구서 (Listing Fees, Transaction Fees, Renew Sold Fees, Processing Fees, set-up fee 등 + 10% VAT)
+const ETSY_MAP = [
+  { kw:'Listing Fees',          account:'지급수수료', label:'리스팅 수수료' },
+  { kw:'Transaction Fees',      account:'지급수수료', label:'거래 수수료' },
+  { kw:'Renew Sold Fees',       account:'지급수수료', label:'재등록 수수료' },
+  { kw:'Renew Expired Fees',    account:'지급수수료', label:'리스팅 갱신 수수료' },
+  { kw:'Auto-Renew Sold Fees',  account:'지급수수료', label:'자동 재등록 수수료' },
+  { kw:'Processing Fees',       account:'지급수수료', label:'결제 처리 수수료' },
+  { kw:'Payment Processing',    account:'지급수수료', label:'결제 처리 수수료' },
+  { kw:'set-up fee',            account:'지급수수료', label:'샵 개설 수수료' },
+  { kw:'Subscription',          account:'지급수수료', label:'구독료' },
+  { kw:'Pattern',               account:'지급수수료', label:'Pattern 사이트 이용료' },
+  { kw:'Currency Conversion',   account:'지급수수료', label:'환전 수수료' },
+  { kw:'Offsite Ads',           account:'광고선전비', label:'Offsite Ads 광고비' },
+  { kw:'Etsy Ads',              account:'광고선전비', label:'Etsy Ads 광고비' },
+  { kw:'Shipping Label',        account:'물류비',     label:'배송 라벨' },
+  { kw:'Refund',                account:'환불',       label:'환불' }
+];
+
+function parseEtsyInvoice(pages) {
+  const txns = [];
+  const months = {January:'01',February:'02',March:'03',April:'04',May:'05',June:'06',
+                  July:'07',August:'08',September:'09',October:'10',November:'11',December:'12'};
+
+  for (const text of pages) {
+    // Invoice 번호
+    const invMatch = text.match(/Invoice:\s*(\d+)/);
+    const invoiceNum = invMatch ? invMatch[1] : '';
+
+    // Invoice Date 추출 (예: "31 October, 2025")
+    let date = null;
+    const dateMatch = text.match(/Invoice Date:\s*(\d{1,2})\s+(\w+),?\s+(\d{4})/);
+    if (dateMatch) {
+      const m = months[dateMatch[2]];
+      if (m) date = dateMatch[3] + '-' + m + '-' + dateMatch[1].padStart(2,'0');
+    }
+    if (!date) {
+      // 백업: Invoice Period 끝 날짜
+      const pm = text.match(/Invoice Period:.+?-\s*(\d{1,2})\s+(\w+),?\s+(\d{4})/);
+      if (pm) {
+        const m = months[pm[2]];
+        if (m) date = pm[3] + '-' + m + '-' + pm[1].padStart(2,'0');
+      }
+    }
+    if (!date) continue;
+
+    // 라인 아이템 추출
+    const lines = text.split('\n');
+    let inItems = false;
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.includes('Summary of Services')) { inItems = true; continue; }
+      if (/^\(?USD\)?$/i.test(line) || line.startsWith('Subtotal') || line.startsWith('Total')) { inItems = false; }
+      if (line.startsWith('Subtotal')) break;
+
+      if (inItems) {
+        // "<qty> <name> -- USD <total>"  또는  "<qty> <name> USD <unit> USD <total>"
+        const m = line.match(/^(\d+)\s+(.+?)\s+(?:--|USD\s+[\d,.]+)\s+USD\s+([\d,.]+)\s*$/);
+        if (!m) continue;
+        const qty = parseInt(m[1], 10);
+        const name = m[2].trim();
+        const total = parseFloat(m[3].replace(/,/g,''));
+        if (isNaN(total) || total === 0) continue;
+
+        let cls = { account: '지급수수료', label: name };
+        for (const item of ETSY_MAP) {
+          if (name.toLowerCase().includes(item.kw.toLowerCase())) { cls = item; break; }
+        }
+
+        txns.push({
+          id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+          date,
+          account: cls.account,
+          name: cls.label + (qty > 1 ? ' x' + qty : ''),
+          amount: Math.abs(total),
+          currency: 'USD',
+          memo: 'Etsy Inv ' + invoiceNum + ' / ' + name + (qty > 1 ? ' (수량 ' + qty + ')' : ''),
+          _route: 'etsy'
+        });
+      }
+    }
+
+    // 10% VAT — Etsy가 셀러에게 부과하는 부가세 (해외 매입세 → 매출세 카테고리로 분류)
+    const vatMatch = text.match(/10%\s*VAT\s+USD\s+([\d,.]+)/i);
+    if (vatMatch) {
+      const vat = parseFloat(vatMatch[1].replace(/,/g,''));
+      if (!isNaN(vat) && vat > 0) {
+        txns.push({
+          id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+          date,
+          account: '매출세',
+          name: 'Etsy 10% VAT',
+          amount: vat,
+          currency: 'USD',
+          memo: 'Etsy Inv ' + invoiceNum + ' / 10% VAT (수수료에 부과)',
+          _route: 'etsy'
+        });
+      }
     }
   }
   return txns;
@@ -1598,6 +1703,8 @@ function parseAmazonStatement(pages) {
       if (itemName.includes(item.kw)) { cls = item; break; }
     }
     if (!cls) continue;
+    // 사용자 요청: Income(매출참고) 항목은 거래내역에 표시하지 않음 — 비용 항목만 표시
+    if (cls.account === '매출참고') continue;
     txns.push({
       id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
       date: endDate, account: cls.account, name: cls.label,
@@ -1716,6 +1823,9 @@ async function dispatchPlatformFile(file) {
       } else if (firstPage.includes('Account activity') || firstPage.includes('Amazon Marketplace') || firstPage.includes('Fulfillment by Amazon')) {
         parserUsed = 'Amazon';
         txns = parseAmazonStatement(pages);
+      } else if (firstPage.includes('Etsy Ireland UC') || (firstPage.includes('Invoice Period') && firstPage.includes('Summary of Services'))) {
+        parserUsed = 'Etsy';
+        txns = parseEtsyInvoice(pages);
       } else {
         // 미인식 PDF: 페이지별 텍스트가 거의 없으면 이미지 PDF
         const totalChars = pages.reduce((s,p) => s + p.length, 0);
@@ -1723,7 +1833,7 @@ async function dispatchPlatformFile(file) {
           toast('이미지 PDF로 보입니다. 큐텐 영수증은 OCR된 xlsx 파일로 업로드해주세요', 'err');
           return;
         }
-        toast('PDF 양식을 자동 인식하지 못했습니다 (Shopee/Amazon만 지원)', 'err');
+        toast('PDF 양식을 자동 인식하지 못했습니다 (Shopee/Amazon/Etsy 지원)', 'err');
         return;
       }
     } else if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
