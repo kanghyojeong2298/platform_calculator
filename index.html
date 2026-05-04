@@ -1585,6 +1585,27 @@ async function extractPdfText(file) {
   return pages;
 }
 
+// PDF에서 페이지별로 좌표 정보를 보존한 items 배열 추출 (spatial parsing용)
+async function extractPdfItems(file) {
+  if (!window.pdfjsLib) { toast('PDF.js 로딩 중. 잠시 후 재시도', 'err'); return null; }
+  const ab = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    const items = tc.items.map(it => ({
+      text: it.str || '',
+      x: it.transform[4],
+      y: it.transform[5],
+      w: it.width || 0,
+      h: it.height || 0
+    }));
+    pages.push(items);
+  }
+  return pages;
+}
+
 // ============ Shopee PDF 파서 ============
 const SHOPEE_ITEM_MAP = [
   { kw:['AMS Commission Fee', 'AMS'], account:'광고선전비', label:'AMS마케팅수수료' },
@@ -1767,6 +1788,146 @@ function parseEtsyInvoice(pages) {
   return txns;
 }
 
+// ============ Rakuten Settlement Summary 파서 ============
+// 양식: Rakuten Group, Inc 발행 정산 요약서.
+// Settlement Date + 매장별 Billing Amount(=총 청구 수수료) 추출.
+// 항목별 명세는 Itemized Statement(-32 시리즈)에 있어 별도 업로드 시에만 분리 가능.
+function parseRakutenSettlement(itemPages) {
+  const txns = [];
+  const months = {Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',
+                  Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12',
+                  January:'01',February:'02',March:'03',April:'04',
+                  June:'06',July:'07',August:'08',September:'09',October:'10',November:'11',December:'12'};
+
+  // 텍스트로 변환 (호환성: string[] 또는 items[][])
+  const allItems = (itemPages && itemPages.length && typeof itemPages[0] === 'string')
+    ? null
+    : [].concat.apply([], itemPages);
+  const fullText = allItems
+    ? allItems.map(it => it.text).join(' ')
+    : (itemPages || []).join('\n');
+
+  // Settlement Date
+  const dateMatch = fullText.match(/Settlement Date:\s*(\w+)\s+(\d+),?\s*(\d{4})/);
+  let date = null;
+  if (dateMatch) {
+    const mm = months[dateMatch[1]];
+    if (mm) date = dateMatch[3] + '-' + mm + '-' + dateMatch[2].padStart(2, '0');
+  }
+  if (!date) {
+    // 백업: Issue Date
+    const im = fullText.match(/Issue Date\s*:?\s*(\w+)\s+(\d+),?\s*(\d{4})/);
+    if (im) {
+      const mm = months[im[1]];
+      if (mm) date = im[3] + '-' + mm + '-' + im[2].padStart(2, '0');
+    }
+  }
+  if (!date) return [];
+
+  // Statement No.
+  const stmtMatch = fullText.match(/Statement No\.\s*:?\s*(\d+-\d+)/);
+  const stmt = stmtMatch ? stmtMatch[1] : '';
+
+  // Shop-wise breakdown 행 추출
+  // 좌표 기반: items가 있으면 y로 그룹핑 후 매장명 + ¥금액 매칭
+  if (allItems) {
+    const sorted = [...allItems].sort((a, b) => b.y - a.y || a.x - b.x);
+    const rows = [];
+    let curRow = []; let curY = null;
+    for (const it of sorted) {
+      if (curY === null || Math.abs(curY - it.y) > 3) {
+        if (curRow.length) rows.push(curRow);
+        curRow = []; curY = it.y;
+      }
+      curRow.push(it);
+    }
+    if (curRow.length) rows.push(curRow);
+
+    // 각 행에서 매장명 + Billing Amount 찾기
+    // 매장명: 영문 alphabetic, x ≈ 35~120
+    // Billing Amount: ¥로 시작하는 금액, x ≈ 150~440
+    // 'Total'이나 'Carry-forward' 행은 제외
+    const seenShops = new Set();
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      const texts = row.sort((a, b) => a.x - b.x);
+      let shopName = null;
+      let billing = null;
+      // 매장명 찾기 — 첫 번째 영문 텍스트
+      for (const it of texts) {
+        const t = it.text.trim();
+        if (!t) continue;
+        if (/^[A-Z][A-Za-z0-9_\-]+$/.test(t) && t !== 'Total' && t !== 'Billing' && t !== 'Payment' && t !== 'Statement' && !t.startsWith('Rakuten')) {
+          shopName = t;
+          break;
+        }
+      }
+      if (!shopName) continue;
+      if (seenShops.has(shopName)) continue;
+
+      // 같은 행 또는 바로 다음 행에서 Billing Amount(¥로 시작) 찾기
+      // 바로 다음 행도 검사 (PDF 1에서 매장명과 금액이 다른 y에 있을 수 있음)
+      const candidateRows = [row];
+      if (r + 1 < rows.length) candidateRows.push(rows[r + 1]);
+      for (const cand of candidateRows) {
+        for (const it of cand) {
+          const t = it.text.trim();
+          // Billing Amount는 보통 더 왼쪽 (x < 450)
+          if (/^¥[\d,]+$/.test(t) && it.x < 450) {
+            const v = parseFloat(t.replace(/[^\d]/g, ''));
+            if (!isNaN(v) && v > 0) { billing = v; break; }
+          }
+        }
+        if (billing != null) break;
+      }
+
+      if (billing == null || billing === 0) continue;
+      seenShops.add(shopName);
+
+      txns.push({
+        id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        date,
+        account: '지급수수료',
+        name: '라쿠텐 정산 (' + shopName + ')',
+        amount: billing,
+        currency: 'JPY',
+        memo: 'Rakuten Settlement ' + stmt + ' / Shop: ' + shopName + ' / 총 청구액 — 항목별 분리는 Itemized Statement (-32) 업로드 필요',
+        _route: 'rakuten'
+      });
+    }
+  } else {
+    // 텍스트 fallback
+    const lines = fullText.split('\n');
+    const seenShops = new Set();
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('Total')) continue;
+      // SHOPNAME ¥BILLING ¥PAYMENT
+      const m = line.match(/^([A-Z][A-Za-z0-9_\-]+)\s+(¥[\d,]+|-)\s+(¥[\d,]+|-)/);
+      if (!m) continue;
+      const shopName = m[1];
+      const billingStr = m[2];
+      if (billingStr === '-') continue;
+      if (seenShops.has(shopName)) continue;
+      const billing = parseFloat(billingStr.replace(/[^\d]/g, ''));
+      if (isNaN(billing) || billing === 0) continue;
+      seenShops.add(shopName);
+      txns.push({
+        id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        date,
+        account: '지급수수료',
+        name: '라쿠텐 정산 (' + shopName + ')',
+        amount: billing,
+        currency: 'JPY',
+        memo: 'Rakuten Settlement ' + stmt + ' / Shop: ' + shopName + ' / 총 청구액 — 항목별 분리는 Itemized Statement (-32) 업로드 필요',
+        _route: 'rakuten'
+      });
+    }
+  }
+
+  return txns;
+}
+
 // ============ Amazon PDF 파서 ============
 // section 속성: 'expenses' 만 거래내역에 포함됨. income/tax/transfers는 매칭은 되지만 emit 안 됨.
 const AMAZON_MAP = [
@@ -1815,9 +1976,31 @@ const AMAZON_MAP = [
 ];
 const AMAZON_EXCLUDE = ['Transfers to bank', 'Failed transfers', 'Disburse to', 'Charges to credit'];
 
-function parseAmazonStatement(pages) {
-  const fullText = pages.join('\n');
-  // 기간 추출
+// 마이너스 부호 정규화: PDF.js가 다양한 유니코드 마이너스/대시를 사용하거나
+// 부호와 숫자 사이에 공백을 끼워 넣는 경우를 단일 ASCII '-'로 정리
+function _normalizeAmazonLine(line) {
+  return line
+    // 다양한 유니코드 마이너스/대시 → ASCII -
+    .replace(/[\u2212\u2013\u2014\u2010\u2011\u2043\u00AD\uFE63\uFF0D]/g, '-')
+    // "- 39,970.81" → "-39,970.81" (부호와 숫자 사이 공백 제거)
+    .replace(/-\s+(\d)/g, '-$1')
+    // 숫자 뒤 따라오는 마이너스(회계식 음수 표기 "39,970.81-") → 부호 앞으로 이동
+    .replace(/([\d,]+\.\d{2})\s*-(?=\s|$)/g, '-$1');
+}
+
+function parseAmazonStatement(itemPages) {
+  // 호환성: itemPages가 string[] (구버전 호출)이면 fallback 텍스트 처리
+  if (itemPages && itemPages.length && typeof itemPages[0] === 'string') {
+    return _parseAmazonStatementText(itemPages);
+  }
+  if (!itemPages || !itemPages.length) return [];
+
+  const txns = [];
+  const seen = new Set();
+
+  // 전체 텍스트로 기간/통화 추출
+  const allItems = [].concat.apply([], itemPages);
+  const fullText = allItems.map(it => it.text).join(' ');
   const periodMatch = fullText.match(/from\s+(\w+ \d{1,2},\s*\d{4}).*?through\s+(\w+ \d{1,2},\s*\d{4})/);
   let endDate = null;
   if (periodMatch) {
@@ -1825,35 +2008,130 @@ function parseAmazonStatement(pages) {
     if (!isNaN(d)) endDate = d.toISOString().substring(0,10);
   }
   if (!endDate) endDate = new Date().toISOString().substring(0,10);
-
-  // 통화
   const curMatch = fullText.match(/All amounts in\s+([A-Z]{3})/);
   const currency = curMatch ? curMatch[1] : 'USD';
 
-  const txns = [];
-  const lines = fullText.split('\n');
-  for (const line of lines) {
-    if (AMAZON_EXCLUDE.some(k => line.includes(k))) continue;
-    const m = line.match(/^(.+?)\s+(-?[\d,]+\.\d{2})\s*$/);
-    if (!m) continue;
-    const itemName = m[1].trim();
-    const amount = parseFloat(m[2].replace(/,/g, ''));
-    if (isNaN(amount) || amount === 0) continue;
-    let cls = null;
-    for (const item of AMAZON_MAP) {
-      if (itemName.includes(item.kw)) { cls = item; break; }
+  for (const items of itemPages) {
+    // y 기준 행 그룹핑 (3px tolerance)
+    const sorted = [...items].sort((a, b) => b.y - a.y || a.x - b.x);
+    const rows = [];
+    let curRow = []; let curY = null;
+    for (const it of sorted) {
+      if (curY === null || Math.abs(curY - it.y) > 3) {
+        if (curRow.length) rows.push(curRow);
+        curRow = []; curY = it.y;
+      }
+      curRow.push(it);
     }
-    if (!cls) continue;
-    // 사용자 요청: PDF의 Expenses 섹션(우상단 비용) 항목만 거래내역에 표시.
-    // Income/Tax/Transfers 섹션 항목은 모두 제외 (FBA 상품 환불, 판매세 수취, 원천징수 등)
-    if (cls.section !== 'expenses') continue;
-    txns.push({
-      id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
-      date: endDate, account: cls.account, name: cls.label,
-      amount: Math.abs(amount), currency,
-      memo: itemName + (periodMatch ? ' / ' + periodMatch[1] + ' ~ ' + periodMatch[2] : ''),
-      _route: 'amazon'
-    });
+    if (curRow.length) rows.push(curRow);
+
+    for (const row of rows) {
+      // 같은 행 내에서 x 정렬 후 인접한 텍스트 아이템들을 'run'으로 결합
+      const sortedRow = [...row].sort((a, b) => a.x - b.x);
+      const runs = [];
+      let curRun = null;
+      for (const it of sortedRow) {
+        // 마이너스 정규화
+        const cleaned = it.text.replace(/[\u2212\u2013\u2014\u2010\u2011\uFE63\uFF0D]/g, '-').trim();
+        if (!cleaned) continue;
+        if (curRun && (it.x - curRun.endX) < 30) {
+          curRun.text += ' ' + cleaned;
+          curRun.endX = it.x + (it.w || 0);
+        } else {
+          if (curRun) runs.push(curRun);
+          curRun = { text: cleaned, x: it.x, endX: it.x + (it.w || 0) };
+        }
+      }
+      if (curRun) runs.push(curRun);
+
+      // 각 run을 검사 — 숫자 run의 왼쪽 텍스트 run을 라벨로 페어링
+      const isNumRun = (r) => /^-?[\d,]+\.?\d{0,2}$/.test(r.text);
+      for (let i = 0; i < runs.length; i++) {
+        const r = runs[i];
+        if (!isNumRun(r)) continue;
+        const num = parseFloat(r.text.replace(/,/g, ''));
+        if (isNaN(num) || num === 0) continue;
+
+        // 왼쪽으로 가장 가까운 비숫자 run을 라벨로
+        let labelRun = null;
+        for (let j = i - 1; j >= 0; j--) {
+          if (isNumRun(runs[j])) continue;
+          if (runs[j].text === '-' || runs[j].text === '') continue;
+          labelRun = runs[j];
+          break;
+        }
+        if (!labelRun) continue;
+
+        // AMAZON_MAP 키워드 매칭
+        let cls = null;
+        for (const item of AMAZON_MAP) {
+          if (labelRun.text.includes(item.kw)) { cls = item; break; }
+        }
+        if (!cls) continue;
+        if (cls.section !== 'expenses') continue;
+
+        const dedupKey = cls.kw + '|' + r.text;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+
+        txns.push({
+          id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+          date: endDate,
+          account: cls.account,
+          name: cls.label,
+          amount: Math.abs(num),
+          currency,
+          memo: cls.kw + (num < 0 ? ' (' + r.text + ')' : ' (' + r.text + ')') + (periodMatch ? ' / ' + periodMatch[1] + ' ~ ' + periodMatch[2] : ''),
+          _route: 'amazon'
+        });
+      }
+    }
+  }
+  return txns;
+}
+
+// 구버전 텍스트 입력용 fallback (Amazon)
+function _parseAmazonStatementText(pages) {
+  const fullText = pages.join('\n');
+  const periodMatch = fullText.match(/from\s+(\w+ \d{1,2},\s*\d{4}).*?through\s+(\w+ \d{1,2},\s*\d{4})/);
+  let endDate = new Date().toISOString().substring(0, 10);
+  if (periodMatch) {
+    const d = new Date(periodMatch[2]);
+    if (!isNaN(d)) endDate = d.toISOString().substring(0, 10);
+  }
+  const curMatch = fullText.match(/All amounts in\s+([A-Z]{3})/);
+  const currency = curMatch ? curMatch[1] : 'USD';
+  const txns = [];
+  const seen = new Set();
+  const lines = fullText.split('\n');
+  for (const rawLine of lines) {
+    const line = _normalizeAmazonLine(rawLine);
+    if (AMAZON_EXCLUDE.some(k => line.includes(k))) continue;
+    const numRe = /-?[\d,]+\.\d{2}/g;
+    const nums = [];
+    let mm;
+    while ((mm = numRe.exec(line)) !== null) {
+      nums.push({ raw: mm[0], val: parseFloat(mm[0].replace(/,/g, '')), idx: mm.index });
+    }
+    if (!nums.length) continue;
+    for (const item of AMAZON_MAP) {
+      const kIdx = line.indexOf(item.kw);
+      if (kIdx === -1) continue;
+      const kEnd = kIdx + item.kw.length;
+      const cand = nums.find(n => n.idx >= kEnd && n.val !== 0);
+      if (!cand) continue;
+      if (item.section !== 'expenses') continue;
+      const dedupKey = item.kw + '|' + cand.raw;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+      txns.push({
+        id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        date: endDate, account: item.account, name: item.label,
+        amount: Math.abs(cand.val), currency,
+        memo: item.kw + ' (' + cand.raw + ')' + (periodMatch ? ' / ' + periodMatch[1] + ' ~ ' + periodMatch[2] : ''),
+        _route: 'amazon'
+      });
+    }
   }
   return txns;
 }
@@ -1964,7 +2242,13 @@ async function dispatchPlatformFile(file) {
         txns = parseShopeeIncomeStatement(pages);
       } else if (firstPage.includes('Account activity') || firstPage.includes('Amazon Marketplace') || firstPage.includes('Fulfillment by Amazon')) {
         parserUsed = 'Amazon';
-        txns = parseAmazonStatement(pages);
+        // 좌표 기반 파서 사용 — 텍스트 추출이 뒤섞이는 PDF에서도 정확
+        const itemPages = await extractPdfItems(file);
+        txns = parseAmazonStatement(itemPages);
+      } else if (firstPage.includes('Rakuten Group') || firstPage.includes('Rakuten Ichiba') || firstPage.includes('Settlement Summary') && firstPage.includes('Rakuten')) {
+        parserUsed = 'Rakuten';
+        const itemPages = await extractPdfItems(file);
+        txns = parseRakutenSettlement(itemPages);
       } else if (firstPage.includes('Etsy Ireland UC') || (firstPage.includes('Invoice Period') && firstPage.includes('Summary of Services'))) {
         parserUsed = 'Etsy';
         txns = parseEtsyInvoice(pages);
@@ -1975,7 +2259,7 @@ async function dispatchPlatformFile(file) {
           toast('이미지 PDF로 보입니다. 큐텐 영수증은 OCR된 xlsx 파일로 업로드해주세요', 'err');
           return;
         }
-        toast('PDF 양식을 자동 인식하지 못했습니다 (Shopee/Amazon/Etsy 지원)', 'err');
+        toast('PDF 양식을 자동 인식하지 못했습니다 (Shopee/Amazon/Etsy/Rakuten 지원)', 'err');
         return;
       }
     } else if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
