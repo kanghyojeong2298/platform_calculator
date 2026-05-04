@@ -396,6 +396,103 @@ const CURRENCY_INFO = {
 const COMMON_CURRENCIES = ['USD','JPY','SGD','MYR','THB','TWD','PHP','VND','MXN','BRL','EUR','GBP','CNY'];
 const RATE_UNIT = { JPY: 100 };
 
+// ============ 기본 내장 환율 (HTML에 고정) ============
+// 외국환중개(smbs.or.kr) 매매기준율 일별 데이터로 산출한 월평균.
+// 새 통화/연도 추가 시 이 객체에 직접 추가하면 됨. 사용자 업로드는 이 값을 덮어씀.
+const DEFAULT_FX_DATA = {
+  '2025': {
+    rates: {
+      BRL: {
+        '2025-01': 240.2828, '2025-02': 250.763, '2025-03': 253.004,
+        '2025-04': 250.0232, '2025-05': 246.0295, '2025-06': 246.6526,
+        '2025-07': 248.9157, '2025-08': 254.85, '2025-09': 259.09,
+        '2025-10': 263.5594, '2025-11': 273.0035, '2025-12': 269.1418
+      },
+      EUR: {
+        '2025-01': 1504.1144, '2025-02': 1505.435, '2025-03': 1575.906,
+        '2025-04': 1617.7127, '2025-05': 1571.45, '2025-06': 1574.5647,
+        '2025-07': 1607.9474, '2025-08': 1617.0305, '2025-09': 1633.0895,
+        '2025-10': 1655.7311, '2025-11': 1684.899, '2025-12': 1717.9586
+      },
+      GBP: {
+        '2025-01': 1795.4906, '2025-02': 1811.9675, '2025-03': 1882.1205,
+        '2025-04': 1895.9214, '2025-05': 1863.7737, '2025-06': 1852.3058,
+        '2025-07': 1858.7013, '2025-08': 1867.189, '2025-09': 1879.7282,
+        '2025-10': 1899.57, '2025-11': 1914.813, '2025-12': 1963.2005
+      },
+      JPY: {
+        '2025-01': 927.9722, '2025-02': 952.5905, '2025-03': 977.7715,
+        '2025-04': 999.9605, '2025-05': 962.2789, '2025-06': 944.9368,
+        '2025-07': 936.9748, '2025-08': 941.323, '2025-09': 941.1986,
+        '2025-10': 939.1644, '2025-11': 939.831, '2025-12': 941.3941
+      },
+      MXN: {
+        '2025-01': 70.755, '2025-02': 70.573, '2025-03': 72.076,
+        '2025-04': 72.035, '2025-05': 71.8153, '2025-06': 71.7905,
+        '2025-07': 73.5922, '2025-08': 74.281, '2025-09': 75.2191,
+        '2025-10': 77.2206, '2025-11': 79.1115, '2025-12': 81.1345
+      },
+      MYR: {
+        '2025-01': 324.6539, '2025-02': 325.4225, '2025-03': 328.5225,
+        '2025-04': 326.8518, '2025-05': 326.5132, '2025-06': 322.1111,
+        '2025-07': 324.817, '2025-08': 328.545, '2025-09': 330.3605,
+        '2025-10': 337.4067, '2025-11': 350.679, '2025-12': 358.4323
+      },
+      PHP: {
+        '2025-01': 24.9244, '2025-02': 24.904, '2025-03': 25.3845,
+        '2025-04': 25.3859, '2025-05': 25.0632, '2025-06': 24.2405,
+        '2025-07': 24.217, '2025-08': 24.324, '2025-09': 24.3123,
+        '2025-10': 24.36, '2025-11': 24.7575, '2025-12': 24.9336
+      },
+      SGD: {
+        '2025-01': 1067.2228, '2025-02': 1073.3165, '2025-03': 1091.1835,
+        '2025-04': 1089.6495, '2025-05': 1076.9163, '2025-06': 1064.8295,
+        '2025-07': 1074.0113, '2025-08': 1080.9025, '2025-09': 1083.3936,
+        '2025-10': 1098.1994, '2025-11': 1118.9025, '2025-12': 1136.4341
+      },
+      THB: {
+        '2025-01': 42.365, '2025-02': 42.822, '2025-03': 43.1475,
+        '2025-04': 42.7573, '2025-05': 42.2858, '2025-06': 41.8968,
+        '2025-07': 42.3896, '2025-08': 42.8305, '2025-09': 43.5095,
+        '2025-10': 43.6628, '2025-11': 45.0025, '2025-12': 46.4332
+      },
+      TWD: {
+        '2025-01': 44.2961, '2025-02': 44.0585, '2025-03': 44.191,
+        '2025-04': 44.1586, '2025-05': 46.1111, '2025-06': 46.1237,
+        '2025-07': 46.9074, '2025-08': 46.134, '2025-09': 45.7991,
+        '2025-10': 46.43, '2025-11': 46.869, '2025-12': 46.7732
+      },
+      USD: {
+        '2025-01': 1455.7944, '2025-02': 1445.56, '2025-03': 1456.945,
+        '2025-04': 1444.3136, '2025-05': 1394.4895, '2025-06': 1366.9474,
+        '2025-07': 1375.2217, '2025-08': 1389.66, '2025-09': 1391.8273,
+        '2025-10': 1423.3556, '2025-11': 1457.77, '2025-12': 1467.4
+      },
+      VND: {
+        '2025-01': 5.7467, '2025-02': 5.688, '2025-03': 5.7035,
+        '2025-04': 5.5845, '2025-05': 5.3721, '2025-06': 5.24,
+        '2025-07': 5.2583, '2025-08': 5.2865, '2025-09': 5.2736,
+        '2025-10': 5.4033, '2025-11': 5.5335, '2025-12': 5.5718
+      },
+    },
+    sources: {
+      BRL: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      EUR: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      GBP: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      JPY: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      MXN: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      MYR: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      PHP: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      SGD: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      THB: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      TWD: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      USD: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+      VND: { filename: '내장 기본값 (smbs.or.kr 2025년)', uploaded: '2026-05-04', dailyCount: 243, monthCount: 12 },
+    }
+  }
+};
+
+
 const ACCOUNTS = ['지급수수료','광고선전비','물류비','매출세','환불','기타'];
 const ACCOUNT_CSS = { 지급수수료:'fee', 광고선전비:'ad', 물류비:'ship', 매출세:'tax', 환불:'refund', 기타:'etc', 매출참고:'rev' };
 
@@ -419,6 +516,25 @@ function loadState() {
       state.platformData = data.platformData || {};
     }
   } catch (e) { console.error(e); }
+
+  // DEFAULT_FX_DATA 머지: 사용자가 업로드한 값이 있으면 그 값 우선, 없는 통화/연도는 기본값에서 보충
+  try {
+    if (typeof DEFAULT_FX_DATA === 'object') {
+      for (const year of Object.keys(DEFAULT_FX_DATA)) {
+        const def = DEFAULT_FX_DATA[year];
+        if (!state.fxData[year]) state.fxData[year] = { rates: {}, sources: {} };
+        if (!state.fxData[year].rates) state.fxData[year].rates = {};
+        if (!state.fxData[year].sources) state.fxData[year].sources = {};
+        for (const cur of Object.keys(def.rates || {})) {
+          // 사용자 업로드 통화는 그대로 유지, 미업로드 통화만 기본값으로 채움
+          if (!state.fxData[year].rates[cur] || Object.keys(state.fxData[year].rates[cur]).length === 0) {
+            state.fxData[year].rates[cur] = Object.assign({}, def.rates[cur]);
+            state.fxData[year].sources[cur] = Object.assign({}, def.sources[cur] || {});
+          }
+        }
+      }
+    }
+  } catch (e) { console.error('DEFAULT_FX_DATA merge error', e); }
 }
 function saveState() {
   try {
@@ -1087,20 +1203,24 @@ function triggerCsvUpload(platformId) {
   state.detailPlatformId = platformId;
   document.getElementById('detail-csvfile').click();
 }
-function handlePlatformCsv(file) {
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      let rows;
-      if (file.name.toLowerCase().endsWith('.csv')) {
-        rows = parseCsv(new TextDecoder('utf-8').decode(e.target.result));
-      } else {
-        const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true });
-        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { raw: false, defval: '' });
-      }
-      if (!rows.length) { toast('데이터 없음', 'err'); return; }
-      const platformId = state.detailPlatformId;
-      const p = PLATFORMS.find(p => p.id === platformId);
+function handlePlatformCsv(file, explicitPlatformId) {
+  // explicitPlatformId 가 주어지면 그 값을 사용 (다중 업로드 race condition 방지)
+  // 아니면 기존처럼 state.detailPlatformId 사용
+  const capturedPlatformId = explicitPlatformId || state.detailPlatformId;
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        let rows;
+        if (file.name.toLowerCase().endsWith('.csv')) {
+          rows = parseCsv(new TextDecoder('utf-8').decode(e.target.result));
+        } else {
+          const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true });
+          rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { raw: false, defval: '' });
+        }
+        if (!rows.length) { toast('데이터 없음', 'err'); resolve(); return; }
+        const platformId = capturedPlatformId;
+        const p = PLATFORMS.find(p => p.id === platformId);
       const txns = [];
       for (const row of rows) {
         const keys = Object.keys(row);
@@ -1159,14 +1279,18 @@ function handlePlatformCsv(file) {
       saveState();
       renderDetailTable();
       renderDashboard();
-      const summary = Object.entries(routedCounts).map(([k, v]) => (PLATFORMS.find(pp => pp.id === k)?.name || k) + ' ' + v + '건').join(', ');
-      toast('업로드 완료: ' + summary, 'ok');
-    } catch (err) {
-      console.error(err);
-      toast('업로드 실패: ' + err.message, 'err');
-    }
-  };
-  reader.readAsArrayBuffer(file);
+        const summary = Object.entries(routedCounts).map(([k, v]) => (PLATFORMS.find(pp => pp.id === k)?.name || k) + ' ' + v + '건').join(', ');
+        toast('업로드 완료: ' + summary, 'ok');
+        resolve();
+      } catch (err) {
+        console.error(err);
+        toast('업로드 실패: ' + err.message, 'err');
+        resolve();
+      }
+    };
+    reader.onerror = () => { toast('파일 읽기 실패', 'err'); resolve(); };
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 // ============ 샘플 데이터 ============
@@ -1850,13 +1974,13 @@ async function dispatchPlatformFile(file) {
         parserUsed = 'Qoo10 송금수수료';
         txns = parseQooTransferXlsx(wb);
       } else {
-        // 일반 CSV-like xlsx → 기존 파서로 fallback
-        handlePlatformCsv(file);
+        // 일반 CSV-like xlsx → 기존 파서로 fallback (Promise 대기)
+        await handlePlatformCsv(file, platformId);
         return;
       }
     } else {
       // CSV → 기존 파서
-      handlePlatformCsv(file);
+      await handlePlatformCsv(file, platformId);
       return;
     }
 
@@ -2133,25 +2257,23 @@ if (_detailInput) {
       if (lower.endsWith('.pdf') || lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
         await dispatchPlatformFile(f);
       } else {
-        handlePlatformCsv(f);
+        await handlePlatformCsv(f, state.detailPlatformId);
       }
     } else {
       // 다중 파일: 순차 처리
       toast(files.length + '개 파일 처리 시작...', '');
       let okCount = 0, errCount = 0;
       const results = [];
+      const capturedPid = state.detailPlatformId;
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
         const lower = f.name.toLowerCase();
         try {
           if (lower.endsWith('.pdf') || lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
+            state.detailPlatformId = capturedPid;  // 매 파일마다 보정
             await dispatchPlatformFile(f);
           } else {
-            // CSV는 readAsArrayBuffer 콜백이라 promise 래핑
-            await new Promise((resolve) => {
-              handlePlatformCsv(f);
-              setTimeout(resolve, 500);
-            });
+            await handlePlatformCsv(f, capturedPid);
           }
           okCount++;
           results.push('✓ ' + f.name);
@@ -2313,8 +2435,8 @@ function processSingleFile(file, targetPlatformId) {
         // dispatchPlatformFile은 비동기이지만 saveState 후 즉시 끝나야 함
         setTimeout(resolve, 300);
       } else if (lower.endsWith('.csv')) {
-        handlePlatformCsv(file);
-        setTimeout(resolve, 400);
+        await handlePlatformCsv(file, targetPlatformId);
+        resolve();
       } else {
         reject(new Error('지원하지 않는 파일 형식: ' + file.name));
       }
@@ -2460,21 +2582,9 @@ window.addEventListener('drop', async e => {
   await processMultipleFiles(files, 'qoo10');
 });
 
-// 9) 카드 자료 업로드 버튼 동작 (검증)
-document.addEventListener('click', e => {
-  if (e.target.matches('button[data-act="csv"]')) {
-    const pl = e.target.dataset.pl;
-    if (pl) {
-      state.detailPlatformId = pl;
-      const inp = document.getElementById('detail-csvfile');
-      if (inp) {
-        // multiple 강제 설정 (혹시 누락 방지)
-        inp.setAttribute('multiple', '');
-        inp.click();
-      }
-    }
-  }
-}, true);
+// 9) 카드 자료 업로드 버튼은 line 1000의 표준 핸들러 + triggerCsvUpload로 이미 처리됨
+// 이전엔 캡처 단계에서도 inp.click()을 또 호출해서 파일 다이얼로그가 두 번 열렸음. 제거.
+// (multiple 속성은 ensureMultiple 인터벌에서 보장하므로 별도 강제 불필요)
 
 // 10) 모달의 자료 업로드 버튼도 multiple 강제
 const detailCsvBtn = document.getElementById('detail-csv');
