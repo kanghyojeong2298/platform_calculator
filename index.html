@@ -2488,7 +2488,7 @@ async function dispatchPlatformFile(file) {
       }
       // 첫 페이지 미리보기로 플랫폼 자동 감지
       const firstPage = pages[0];
-      if (firstPage.includes('Income Statement') || firstPage.includes('kaycos.') || firstPage.includes('Payout Service')) {
+      if (!firstPage.includes('My Income Statement') && !/Lazada|lazuni/i.test(firstPage) && (firstPage.includes('Income Statement') || firstPage.includes('kaycos.') || firstPage.includes('Payout Service'))) {
         parserUsed = 'Shopee';
         txns = parseShopeeIncomeStatement(pages);
       } else if (firstPage.includes('Account activity') || firstPage.includes('Amazon Marketplace') || firstPage.includes('Fulfillment by Amazon')) {
