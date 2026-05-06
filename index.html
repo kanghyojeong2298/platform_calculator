@@ -994,19 +994,32 @@ function renderPlatformGroups() {
   html += buildCard(PLATFORMS.find(p => p.id === 'amazon'));
   html += '</div>';
 
-  // 기타 (eBay/Rakuten/Lazada)
-  html += '<div class="group-h">기타 <span class="group-h-sub">자료 미접수</span></div>';
-  html += '<div class="card-grid">';
-  // Lazada 그룹 (5개국)
+  // Lazada 5개국 — Shopee와 동일 구조 (그룹 헤더 + 카드그리드 + 합계 카드)
   const lazadaPlatforms = PLATFORMS.filter(p => p.group === 'lazada');
   if (lazadaPlatforms.length) {
-    html += '<div class="group-h"><span>🛍️ Lazada (동남아 5개국)</span><span class="group-h-sub">매출 입력 시 수수료율 곱해서 자동 계산</span></div>';
+    let lazadaTotal = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, count:0 };
+    lazadaPlatforms.forEach(p => {
+      const t = calcPlatformTotals(p.id);
+      Object.keys(lazadaTotal).forEach(k => lazadaTotal[k] += t[k] || 0);
+      lazadaTotal.count += t.count;
+    });
+    const lazadaAllTotal = ACCOUNTS.reduce((s,a) => s + lazadaTotal[a], 0);
+    html += '<div class="group-h">Lazada 5개국 <span class="group-h-sub">광고 Excel 업로드 또는 매출 입력 · 통화 5종</span></div>';
     html += '<div class="card-grid">';
     lazadaPlatforms.forEach(p => html += buildCard(p));
     html += '</div>';
+    if (lazadaAllTotal > 0) {
+      html += '<div class="shopee-sum">' +
+        '<div><div class="ss-l">Lazada 5개국 합계</div>' +
+        '<div class="ss-v">₩ ' + formatNum(lazadaAllTotal, 0) + '</div>' +
+        '<div class="ss-s">거래 ' + lazadaTotal.count + '건 · 매출(참고) ₩ ' + formatNum(lazadaTotal.매출참고, 0) + '</div></div>' +
+        '<div style="text-align:right; font-size:11px; opacity:0.85;">지급수수료 ' + formatNum(lazadaTotal.지급수수료, 0) + '<br>광고선전비 ' + formatNum(lazadaTotal.광고선전비, 0) + '<br>물류비 ' + formatNum(lazadaTotal.물류비, 0) + '<br>매출세 ' + formatNum(lazadaTotal.매출세, 0) + '</div></div>';
+    }
   }
 
-  // 그 외 (Amazon, eBay, Rakuten, Etsy, 60% 등)
+  // 기타 (eBay/Rakuten/Etsy/60% — Lazada 제외)
+  html += '<div class="group-h">기타 <span class="group-h-sub">자료 업로드 가능</span></div>';
+  html += '<div class="card-grid">';
   PLATFORMS.filter(p => p.group === 'other').forEach(p => html += buildCard(p));
   html += '</div>';
 
