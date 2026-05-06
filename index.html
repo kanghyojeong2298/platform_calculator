@@ -381,7 +381,11 @@ const PLATFORMS = [
   { id: 'amazon',    name: 'Amazon',              currency: 'USD', group: 'amazon' },
   { id: 'ebay',      name: 'eBay',                currency: 'USD', group: 'other' },
   { id: 'rakuten',   name: 'Rakuten',             currency: 'JPY', group: 'other' },
-  { id: 'lazada',    name: 'Lazada',              currency: 'THB', group: 'other' },
+  { id: 'lazada_th', name: 'Lazada 태국',         currency: 'THB', group: 'lazada' },
+  { id: 'lazada_sg', name: 'Lazada 싱가포르',     currency: 'SGD', group: 'lazada' },
+  { id: 'lazada_my', name: 'Lazada 말레이시아',   currency: 'MYR', group: 'lazada' },
+  { id: 'lazada_vn', name: 'Lazada 베트남',       currency: 'VND', group: 'lazada' },
+  { id: 'lazada_ph', name: 'Lazada 필리핀',       currency: 'PHP', group: 'lazada' },
   { id: 'etsy',      name: 'Etsy',                currency: 'USD', group: 'other' },
 ];
 
@@ -993,6 +997,16 @@ function renderPlatformGroups() {
   // 기타 (eBay/Rakuten/Lazada)
   html += '<div class="group-h">기타 <span class="group-h-sub">자료 미접수</span></div>';
   html += '<div class="card-grid">';
+  // Lazada 그룹 (5개국)
+  const lazadaPlatforms = PLATFORMS.filter(p => p.group === 'lazada');
+  if (lazadaPlatforms.length) {
+    html += '<div class="group-h"><span>🛍️ Lazada (동남아 5개국)</span><span class="group-h-sub">매출 입력 시 수수료율 곱해서 자동 계산</span></div>';
+    html += '<div class="card-grid">';
+    lazadaPlatforms.forEach(p => html += buildCard(p));
+    html += '</div>';
+  }
+
+  // 그 외 (Amazon, eBay, Rakuten, Etsy, 60% 등)
   PLATFORMS.filter(p => p.group === 'other').forEach(p => html += buildCard(p));
   html += '</div>';
 
@@ -1962,6 +1976,90 @@ function parseRakutenSettlement(itemPages) {
   return txns;
 }
 
+// ============ 라자다 광고 Excel 파서 ============
+// 양식: 1행 "라자다 인플루언서 광고(국가)" 같은 제목, 3행 헤더 (Date, Orders, Revenue, Units Sold, Est. Spend, Est ROAS)
+// 4행부터 일별 데이터. 월별로 Est. Spend 집계 → 광고선전비 거래로 등록.
+function parseLazadaAdExcel(workbook) {
+  const COUNTRY_TO_PLATFORM = {
+    '싱가폴': 'lazada_sg', '싱가포르': 'lazada_sg', 'Singapore': 'lazada_sg', 'SG': 'lazada_sg',
+    '태국': 'lazada_th', 'Thailand': 'lazada_th', 'TH': 'lazada_th',
+    '말레이시아': 'lazada_my', 'Malaysia': 'lazada_my', 'MY': 'lazada_my',
+    '베트남': 'lazada_vn', 'Vietnam': 'lazada_vn', 'VN': 'lazada_vn',
+    '필리핀': 'lazada_ph', 'Philippines': 'lazada_ph', 'PH': 'lazada_ph'
+  };
+  const PLATFORM_CURRENCY = {
+    lazada_sg: 'SGD', lazada_th: 'THB', lazada_my: 'MYR', lazada_vn: 'VND', lazada_ph: 'PHP'
+  };
+
+  const txns = [];
+  for (const sheetName of workbook.SheetNames) {
+    const aoa = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' });
+    if (!aoa.length) continue;
+
+    // 1행에서 제목 + 국가 추출
+    const titleRow = (aoa[0] || []).map(v => String(v || '')).join(' ');
+    if (!/라자다|Lazada/i.test(titleRow)) continue;
+
+    // 국가 인식
+    let platformId = null;
+    for (const [key, pid] of Object.entries(COUNTRY_TO_PLATFORM)) {
+      if (titleRow.includes(key)) { platformId = pid; break; }
+    }
+    if (!platformId) continue;
+    const currency = PLATFORM_CURRENCY[platformId];
+
+    // 헤더 행 찾기 — Date / Est. Spend 컬럼
+    let headerRowIdx = -1;
+    let dateCol = -1, spendCol = -1;
+    for (let r = 0; r < Math.min(aoa.length, 10); r++) {
+      const row = aoa[r] || [];
+      const dateIdx = row.findIndex(c => /^date$/i.test(String(c || '').trim()) || /일자|날짜/.test(String(c || '')));
+      const spendIdx = row.findIndex(c => /Est\.?\s*Spend|Spend|광고비|지출/i.test(String(c || '')));
+      if (dateIdx !== -1 && spendIdx !== -1) {
+        headerRowIdx = r;
+        dateCol = dateIdx;
+        spendCol = spendIdx;
+        break;
+      }
+    }
+    if (headerRowIdx === -1) continue;
+
+    // 일별 → 월별 집계
+    const monthlySpend = {};
+    for (let r = headerRowIdx + 1; r < aoa.length; r++) {
+      const row = aoa[r] || [];
+      const dateRaw = String(row[dateCol] || '').trim();
+      const spendRaw = String(row[spendCol] || '').replace(/,/g, '').trim();
+      const date = parseDate(dateRaw);
+      if (!date) continue;
+      const spend = parseFloat(spendRaw);
+      if (isNaN(spend) || spend === 0) continue;
+      const month = date.substring(0, 7);
+      if (!monthlySpend[month]) monthlySpend[month] = { total: 0, days: 0, lastDate: date };
+      monthlySpend[month].total += spend;
+      monthlySpend[month].days += 1;
+      if (date > monthlySpend[month].lastDate) monthlySpend[month].lastDate = date;
+    }
+
+    // 월별 거래 생성 (월말 또는 마지막 데이터 일자)
+    for (const month of Object.keys(monthlySpend).sort()) {
+      const m = monthlySpend[month];
+      // 거래일은 그 달의 마지막 데이터 일자 사용
+      txns.push({
+        id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        date: m.lastDate,
+        account: '광고선전비',
+        name: '라자다 인플루언서 광고 (' + month + ')',
+        amount: Math.abs(+m.total.toFixed(2)),
+        currency,
+        memo: month + ' 월 합계 / ' + m.days + '일 데이터 / 시트: ' + sheetName,
+        _route: platformId
+      });
+    }
+  }
+  return txns;
+}
+
 // ============ Amazon PDF 파서 ============
 // section 속성: 'expenses' 만 거래내역에 포함됨. income/tax/transfers는 매칭은 되지만 emit 안 됨.
 const AMAZON_MAP = [
@@ -2405,6 +2503,10 @@ async function dispatchPlatformFile(file) {
       } else if (sample[0] && sample[0].includes && sample[0].some(c => String(c||'').includes('발생일'))) {
         parserUsed = 'Qoo10 송금수수료';
         txns = parseQooTransferXlsx(wb);
+      } else if (/라자다|Lazada/i.test(sampleText)) {
+        // 라자다 광고 Excel 자동감지 (제목에 "라자다 인플루언서 광고(국가)" 등 포함)
+        parserUsed = 'Lazada 광고 Excel';
+        txns = parseLazadaAdExcel(wb);
       } else {
         // 일반 CSV-like xlsx → 기존 파서로 fallback (Promise 대기)
         await handlePlatformCsv(file, platformId);
@@ -10525,6 +10627,162 @@ console.log('v3.32 — 코드 복사 방지 적용 (관리자 제외, deterrent 
   // 전역 노출 — dispatchPlatformFile 등에서 호출
   window.openQooQuickModal = open;
 })();
+</script>
+
+<!-- ============ 라자다 매출 입력 모달 ============ -->
+<div id="lzd-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:12px; padding:24px 28px; max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+    <h3 style="font-size:17px; font-weight:700; margin-bottom:6px;">라자다 매출 + 수수료율 입력</h3>
+    <p style="font-size:12px; color:#6b7280; margin-bottom:16px;">매출 금액에 수수료율을 곱해서 지급수수료로 자동 등록됩니다.</p>
+    <div id="lzd-country-label" style="font-size:13px; color:#4f46e5; background:#eef2ff; padding:8px 12px; border-radius:7px; margin-bottom:14px; font-weight:600;"></div>
+
+    <div style="margin-bottom:14px;">
+      <label style="font-size:12px; font-weight:600; color:#374151; display:block; margin-bottom:4px;">거래일 (보통 정산일 또는 월말)</label>
+      <input type="date" id="lzd-date" style="width:100%; padding:9px 11px; border:1px solid #d1d5db; border-radius:7px; font-size:13px;">
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <label style="font-size:12px; font-weight:600; color:#374151; display:block; margin-bottom:4px;">매출 금액 (<span id="lzd-cur"></span>)</label>
+      <input type="text" id="lzd-sales" placeholder="예: 100,000" style="width:100%; padding:9px 11px; border:1px solid #d1d5db; border-radius:7px; font-size:13px;">
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <label style="font-size:12px; font-weight:600; color:#374151; display:block; margin-bottom:4px;">수수료율 (%)</label>
+      <input type="number" id="lzd-rate" step="0.01" placeholder="예: 5.0" style="width:100%; padding:9px 11px; border:1px solid #d1d5db; border-radius:7px; font-size:13px;">
+      <div id="lzd-rate-hint" style="font-size:11px; color:#9ca3af; margin-top:3px;"></div>
+    </div>
+
+    <div id="lzd-preview" style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px; margin-bottom:18px; font-size:13px;">
+      <div style="color:#6b7280; font-size:11px;">계산될 지급수수료</div>
+      <div id="lzd-fee" style="font-size:18px; font-weight:700; color:#1f2937;">—</div>
+    </div>
+
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button id="lzd-cancel" class="btn">취소</button>
+      <button id="lzd-submit" class="btn primary">등록</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ 라자다 매출 입력 모달 로직 ============
+(function() {
+  const LZD_RATE_KEY = 'lzdFeeRates_v1';
+  function getRates() {
+    try { return JSON.parse(localStorage.getItem(LZD_RATE_KEY) || '{}'); } catch { return {}; }
+  }
+  function saveRate(platformId, rate) {
+    const r = getRates(); r[platformId] = rate;
+    localStorage.setItem(LZD_RATE_KEY, JSON.stringify(r));
+  }
+
+  const modal = document.getElementById('lzd-modal');
+  const labelEl = document.getElementById('lzd-country-label');
+  const curEl = document.getElementById('lzd-cur');
+  const dateInput = document.getElementById('lzd-date');
+  const salesInput = document.getElementById('lzd-sales');
+  const rateInput = document.getElementById('lzd-rate');
+  const rateHint = document.getElementById('lzd-rate-hint');
+  const feeEl = document.getElementById('lzd-fee');
+  const cancelBtn = document.getElementById('lzd-cancel');
+  const submitBtn = document.getElementById('lzd-submit');
+
+  let curPlatformId = null;
+
+  function recalcFee() {
+    const sales = parseFloat((salesInput.value || '').replace(/[^\d.-]/g, ''));
+    const rate = parseFloat(rateInput.value);
+    if (isNaN(sales) || sales <= 0 || isNaN(rate) || rate < 0) { feeEl.textContent = '—'; return; }
+    const fee = sales * rate / 100;
+    const cur = curEl.textContent;
+    feeEl.textContent = cur + ' ' + fee.toLocaleString(undefined, {maximumFractionDigits: 2});
+  }
+  salesInput.addEventListener('input', recalcFee);
+  rateInput.addEventListener('input', recalcFee);
+
+  function open(platformId) {
+    const p = PLATFORMS.find(x => x.id === platformId);
+    if (!p) return;
+    curPlatformId = platformId;
+    labelEl.textContent = p.name + ' (' + p.currency + ')';
+    curEl.textContent = p.currency;
+    salesInput.value = '';
+    feeEl.textContent = '—';
+    // 이전에 사용한 수수료율 복원
+    const rates = getRates();
+    if (rates[platformId] != null) {
+      rateInput.value = rates[platformId];
+      rateHint.textContent = '직전에 입력한 수수료율 ' + rates[platformId] + '% (수정 가능)';
+    } else {
+      rateInput.value = '';
+      rateHint.textContent = '아직 저장된 수수료율 없음';
+    }
+    // 기본 날짜 = 오늘 또는 선택된 연도 12월말
+    const today = new Date();
+    dateInput.value = today.toISOString().substring(0, 10);
+    modal.style.display = 'flex';
+    setTimeout(() => salesInput.focus(), 50);
+  }
+  function close() { modal.style.display = 'none'; }
+
+  cancelBtn.onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+
+  submitBtn.onclick = () => {
+    if (!curPlatformId) return;
+    const sales = parseFloat((salesInput.value || '').replace(/[^\d.-]/g, ''));
+    const rate = parseFloat(rateInput.value);
+    const date = dateInput.value;
+    if (!date) { alert('거래일을 입력해주세요'); return; }
+    if (isNaN(sales) || sales <= 0) { alert('유효한 매출 금액을 입력해주세요'); return; }
+    if (isNaN(rate) || rate < 0) { alert('유효한 수수료율(%)을 입력해주세요'); return; }
+
+    const fee = sales * rate / 100;
+    const p = PLATFORMS.find(x => x.id === curPlatformId);
+    const y = state.selectedYear;
+    if (!state.platformData[y]) state.platformData[y] = {};
+    if (!state.platformData[y][curPlatformId]) state.platformData[y][curPlatformId] = [];
+    state.platformData[y][curPlatformId].push({
+      id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+      date,
+      account: '지급수수료',
+      name: '라자다 판매수수료 (' + rate + '%)',
+      amount: Math.abs(fee),
+      currency: p.currency,
+      memo: '매출 ' + p.currency + ' ' + sales.toLocaleString() + ' × ' + rate + '%'
+    });
+    // 매출 참고도 기록
+    state.platformData[y][curPlatformId].push({
+      id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+      date,
+      account: '매출참고',
+      name: '라자다 매출',
+      amount: Math.abs(sales),
+      currency: p.currency,
+      memo: '입력 매출액 (수수료율 ' + rate + '% 적용)'
+    });
+    saveState();
+    saveRate(curPlatformId, rate);
+    if (typeof renderDashboard === 'function') renderDashboard();
+    if (typeof renderDetailTable === 'function') renderDetailTable();
+    toast(p.name + ' — 매출 ' + p.currency + sales.toLocaleString() + ' / 수수료 ' + p.currency + Math.round(fee).toLocaleString() + ' 등록', 'ok');
+    close();
+  };
+
+  window.openLazadaSalesModal = open;
+})();
+
+// 라자다 카드의 "+ 데이터 입력" (edit) 버튼만 모달로 — "자료 업로드"는 정상 파일창
+document.addEventListener('click', e => {
+  const btn = e.target.closest('button[data-act="edit"]');
+  if (!btn) return;
+  const pid = btn.dataset.pl;
+  if (!pid || !pid.startsWith('lazada_')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+  window.openLazadaSalesModal(pid);
+}, true);
 </script>
 </body>
 </html>
