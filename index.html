@@ -1004,7 +1004,7 @@ function renderPlatformGroups() {
       lazadaTotal.count += t.count;
     });
     const lazadaAllTotal = ACCOUNTS.reduce((s,a) => s + lazadaTotal[a], 0);
-    html += '<div class="group-h">Lazada 5개국 <span class="group-h-sub">광고 Excel 업로드 또는 매출 입력 · 통화 5종</span></div>';
+    html += '<div class="group-h">Lazada 5개국 <span class="group-h-sub">동남아 5개국 · 통화 5종</span></div>';
     html += '<div class="card-grid">';
     lazadaPlatforms.forEach(p => html += buildCard(p));
     html += '</div>';
@@ -1017,7 +1017,7 @@ function renderPlatformGroups() {
     }
   }
 
-  // 기타 (eBay/Rakuten/Etsy/60% — Lazada 제외)
+  // 기타 (eBay/Rakuten/Etsy/60%)
   html += '<div class="group-h">기타 <span class="group-h-sub">자료 업로드 가능</span></div>';
   html += '<div class="card-grid">';
   PLATFORMS.filter(p => p.group === 'other').forEach(p => html += buildCard(p));
@@ -1315,20 +1315,23 @@ function handlePlatformCsv(file, explicitPlatformId) {
         }
       }
       if (!txns.length) { toast('인식된 항목 없음', 'err'); return; }
-      const y = state.selectedYear;
-      if (!state.platformData[y]) state.platformData[y] = {};
-      // 라우팅 (쇼피 통합 CSV이면 8개국으로 분리, 아니면 현재 카드로)
+      // 라우팅: txn 날짜의 연도로 저장
       const routedCounts = {};
+      const yearsTouchedCsv = new Set();
       for (const t of txns) {
         const target = t._route || platformId;
         delete t._route;
-        if (!state.platformData[y][target]) state.platformData[y][target] = [];
-        state.platformData[y][target].push(t);
+        const yr = (t.date && /^\d{4}/.test(t.date)) ? t.date.substring(0, 4) : state.selectedYear;
+        if (!state.platformData[yr]) state.platformData[yr] = {};
+        if (!state.platformData[yr][target]) state.platformData[yr][target] = [];
+        state.platformData[yr][target].push(t);
+        yearsTouchedCsv.add(yr);
         routedCounts[target] = (routedCounts[target] || 0) + 1;
       }
       saveState();
       renderDetailTable();
       renderDashboard();
+      if (typeof renderYearChips === 'function') renderYearChips();
         const summary = Object.entries(routedCounts).map(([k, v]) => (PLATFORMS.find(pp => pp.id === k)?.name || k) + ' ' + v + '건').join(', ');
         toast('업로드 완료: ' + summary, 'ok');
         resolve();
@@ -1989,87 +1992,128 @@ function parseRakutenSettlement(itemPages) {
   return txns;
 }
 
-// ============ 라자다 광고 Excel 파서 ============
-// 양식: 1행 "라자다 인플루언서 광고(국가)" 같은 제목, 3행 헤더 (Date, Orders, Revenue, Units Sold, Est. Spend, Est ROAS)
-// 4행부터 일별 데이터. 월별로 Est. Spend 집계 → 광고선전비 거래로 등록.
-function parseLazadaAdExcel(workbook) {
-  const COUNTRY_TO_PLATFORM = {
-    '싱가폴': 'lazada_sg', '싱가포르': 'lazada_sg', 'Singapore': 'lazada_sg', 'SG': 'lazada_sg',
-    '태국': 'lazada_th', 'Thailand': 'lazada_th', 'TH': 'lazada_th',
-    '말레이시아': 'lazada_my', 'Malaysia': 'lazada_my', 'MY': 'lazada_my',
-    '베트남': 'lazada_vn', 'Vietnam': 'lazada_vn', 'VN': 'lazada_vn',
-    '필리핀': 'lazada_ph', 'Philippines': 'lazada_ph', 'PH': 'lazada_ph'
-  };
-  const PLATFORM_CURRENCY = {
-    lazada_sg: 'SGD', lazada_th: 'THB', lazada_my: 'MYR', lazada_vn: 'VND', lazada_ph: 'PHP'
-  };
+// ============ Lazada Income Statement PDF 파서 ============
+// 양식: "My Income Statement" + Lazada 브랜드 + Short Code (SG/MY/TH/VN/PH)
+// Income summary 섹션의 Sales/Lazada Fees/Logistics/Marketing Fees 4개 카테고리 항목 추출.
+// 부호 규칙: PDF에서 음수 = 비용 (양수 저장), 양수 = 차감 (음수 저장 — 소계에서 자동 차감)
+const LAZADA_ITEM_MAP = [
+  // Sales — 매출참고로 매핑 (거래내역에서 제외)
+  { kw:'Item Price Credit',                          section:'sales',     account:'매출참고', label:'상품가 수령' },
+  { kw:'Reversal Item Price',                        section:'sales',     account:'매출참고', label:'상품가 환불' },
 
-  const txns = [];
-  for (const sheetName of workbook.SheetNames) {
-    const aoa = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' });
-    if (!aoa.length) continue;
+  // Lazada Fees — 지급수수료 / 매출세
+  { kw:'Reversal Commission',                        section:'fees',      account:'지급수수료', label:'판매수수료 환불' },
+  { kw:'Commission',                                 section:'fees',      account:'지급수수료', label:'판매수수료' },
+  { kw:'Payment Fee',                                section:'fees',      account:'지급수수료', label:'결제수수료' },
+  { kw:'Reversal of GST on Imported Low-Value Goods', section:'fees',     account:'매출세',     label:'수입GST 환불' },
+  { kw:'GST on Imported Low-Value Goods',            section:'fees',      account:'매출세',     label:'수입GST' },
+  { kw:'Reversal Low Value Goods Tax',               section:'fees',      account:'매출세',     label:'저가상품세 환불' },
+  { kw:'Low Value Goods Tax',                        section:'fees',      account:'매출세',     label:'저가상품세' },
+  { kw:'Reversal VAT',                               section:'fees',      account:'매출세',     label:'VAT 환불' },
+  { kw:'VAT',                                        section:'fees',      account:'매출세',     label:'VAT' },
 
-    // 1행에서 제목 + 국가 추출
-    const titleRow = (aoa[0] || []).map(v => String(v || '')).join(' ');
-    if (!/라자다|Lazada/i.test(titleRow)) continue;
+  // Logistics — 물류비
+  { kw:'Free Shipping Max Fee',                      section:'logistics', account:'물류비',     label:'무료배송 최대수수료' },
+  { kw:'Free Shipping',                              section:'logistics', account:'물류비',     label:'무료배송' },
+  { kw:'Shipping Fee Voucher Refund to Laz',         section:'logistics', account:'물류비',     label:'배송쿠폰 환불 반환' },
+  { kw:'Shipping Fee Voucher (by Lazada)',           section:'logistics', account:'물류비',     label:'라자다 배송쿠폰' },
+  { kw:'International Shipping fees',                section:'logistics', account:'물류비',     label:'국제배송비' },
+  { kw:'Shipping Fee Refund to Customer',            section:'logistics', account:'물류비',     label:'고객 배송비 환불' },
+  { kw:'Domestic Shipping fees',                     section:'logistics', account:'물류비',     label:'국내배송비' },
+  { kw:'Shipping Fee (Paid By Customer)',            section:'logistics', account:'물류비',     label:'고객결제 배송비' },
+  { kw:'Platform Shipping Fee Subsidy Tax',          section:'logistics', account:'물류비',     label:'플랫폼 배송보조 세금' },
+  { kw:'Shipping Fee',                               section:'logistics', account:'물류비',     label:'배송비' },
 
-    // 국가 인식
-    let platformId = null;
-    for (const [key, pid] of Object.entries(COUNTRY_TO_PLATFORM)) {
-      if (titleRow.includes(key)) { platformId = pid; break; }
-    }
-    if (!platformId) continue;
-    const currency = PLATFORM_CURRENCY[platformId];
+  // Marketing Fees — 광고선전비
+  { kw:'Reversal Promotional Charges Vouchers',      section:'marketing', account:'광고선전비', label:'프로모션 쿠폰 환불' },
+  { kw:'Promotional Charges Vouchers',               section:'marketing', account:'광고선전비', label:'프로모션 쿠폰' }
+];
 
-    // 헤더 행 찾기 — Date / Est. Spend 컬럼
-    let headerRowIdx = -1;
-    let dateCol = -1, spendCol = -1;
-    for (let r = 0; r < Math.min(aoa.length, 10); r++) {
-      const row = aoa[r] || [];
-      const dateIdx = row.findIndex(c => /^date$/i.test(String(c || '').trim()) || /일자|날짜/.test(String(c || '')));
-      const spendIdx = row.findIndex(c => /Est\.?\s*Spend|Spend|광고비|지출/i.test(String(c || '')));
-      if (dateIdx !== -1 && spendIdx !== -1) {
-        headerRowIdx = r;
-        dateCol = dateIdx;
-        spendCol = spendIdx;
-        break;
-      }
-    }
-    if (headerRowIdx === -1) continue;
+const LAZADA_CURRENCY_TO_PLATFORM = {
+  SGD: 'lazada_sg', MYR: 'lazada_my', THB: 'lazada_th', VND: 'lazada_vn', PHP: 'lazada_ph'
+};
 
-    // 일별 → 월별 집계
-    const monthlySpend = {};
-    for (let r = headerRowIdx + 1; r < aoa.length; r++) {
-      const row = aoa[r] || [];
-      const dateRaw = String(row[dateCol] || '').trim();
-      const spendRaw = String(row[spendCol] || '').replace(/,/g, '').trim();
-      const date = parseDate(dateRaw);
-      if (!date) continue;
-      const spend = parseFloat(spendRaw);
-      if (isNaN(spend) || spend === 0) continue;
-      const month = date.substring(0, 7);
-      if (!monthlySpend[month]) monthlySpend[month] = { total: 0, days: 0, lastDate: date };
-      monthlySpend[month].total += spend;
-      monthlySpend[month].days += 1;
-      if (date > monthlySpend[month].lastDate) monthlySpend[month].lastDate = date;
-    }
-
-    // 월별 거래 생성 (월말 또는 마지막 데이터 일자)
-    for (const month of Object.keys(monthlySpend).sort()) {
-      const m = monthlySpend[month];
-      // 거래일은 그 달의 마지막 데이터 일자 사용
-      txns.push({
-        id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-        date: m.lastDate,
-        account: '광고선전비',
-        name: '라자다 인플루언서 광고 (' + month + ')',
-        amount: Math.abs(+m.total.toFixed(2)),
-        currency,
-        memo: month + ' 월 합계 / ' + m.days + '일 데이터 / 시트: ' + sheetName,
-        _route: platformId
-      });
-    }
+function classifyLazadaItem(name) {
+  const t = name.trim();
+  for (const m of LAZADA_ITEM_MAP) {
+    if (t.toLowerCase().includes(m.kw.toLowerCase())) return m;
   }
+  return null;
+}
+
+function parseLazadaIncomeStatement(pages) {
+  const txns = [];
+  const fullText = pages.join('\n');
+
+  // 통화 추출
+  const curMatch = fullText.match(/Amount\s*\(([A-Z]{3})\)/);
+  const currency = curMatch ? curMatch[1] : null;
+  if (!currency) return [];
+  const platformId = LAZADA_CURRENCY_TO_PLATFORM[currency];
+  if (!platformId) return [];
+
+  // 기간 종료일 추출 — "Statement from DD/M/YYYY to DD/M/YYYY"
+  const periodMatch = fullText.match(/Statement from\s+(\d{1,2})\/(\d{1,2})\/(\d{4})\s+to\s+(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  let endDate = null;
+  if (periodMatch) {
+    endDate = periodMatch[6] + '-' + periodMatch[5].padStart(2, '0') + '-' + periodMatch[4].padStart(2, '0');
+  }
+  if (!endDate) endDate = new Date().toISOString().substring(0, 10);
+
+  console.log('[parseLazadaIncomeStatement] 통화:', currency, '플랫폼:', platformId, '기간 종료:', endDate);
+
+  // 라인별 파싱: "<항목명> <금액>" 패턴
+  // Income detail 섹션 시작되면 stop
+  const lines = fullText.split(/\n/);
+  let inSummary = false;
+  let stop = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.includes('Income summary')) { inSummary = true; continue; }
+    if (line.includes('Income detail') || line.startsWith('Total Settlement') || line.startsWith('Transaction')) { stop = true; }
+    if (stop) continue;
+    if (!inSummary) continue;
+    // 카테고리 헤더 (Sales / Lazada Fees / Logistics / Marketing Fees)
+    if (/^(Sales|Lazada Fees|Logistics|Marketing Fees)$/i.test(line)) continue;
+
+    // 마이너스 부호 정규화 (PDF가 다양한 마이너스 사용)
+    const norm = line.replace(/[\u2212\u2013\u2014\u2010\u2011\uFE63\uFF0D]/g, '-');
+    // "<name> <amount>" — amount는 마지막 숫자 (천단위 콤마, 음수 가능)
+    const m = norm.match(/^(.+?)\s+(-?[\d,]+\.\d{2})\s*$/);
+    if (!m) continue;
+    const itemName = m[1].trim();
+    const amount = parseFloat(m[2].replace(/,/g, ''));
+    if (isNaN(amount) || amount === 0) continue;
+
+    const cls = classifyLazadaItem(itemName);
+    if (!cls) {
+      console.log('[parseLazadaIncomeStatement] 미분류 항목:', itemName, amount);
+      continue;
+    }
+    if (cls.section === 'sales') continue; // 매출 항목 제외 (Income은 거래내역에 안 들어감)
+
+    // 부호 기반 분류: 음수 = 비용, 양수 = 차감
+    let storedAmount;
+    if (amount < 0) {
+      storedAmount = Math.abs(amount);  // 비용 (양수 저장)
+    } else {
+      storedAmount = -amount;  // 차감 (음수 저장 — 소계에서 자동 차감)
+    }
+
+    txns.push({
+      id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+      date: endDate,
+      account: cls.account,
+      name: cls.label,
+      amount: storedAmount,
+      currency,
+      memo: itemName + (amount > 0 ? ' [차감]' : ''),
+      _route: platformId
+    });
+  }
+
+  console.log('[parseLazadaIncomeStatement] 추출:', txns.length, '건');
   return txns;
 }
 
@@ -2459,6 +2503,9 @@ async function dispatchPlatformFile(file) {
       } else if (firstPage.includes('Etsy Ireland UC') || (firstPage.includes('Invoice Period') && firstPage.includes('Summary of Services'))) {
         parserUsed = 'Etsy';
         txns = parseEtsyInvoice(pages);
+      } else if (firstPage.includes('My Income Statement') && /Amount\s*\([A-Z]{3}\)/.test(firstPage) && (firstPage.includes('Lazada') || firstPage.includes('lazuni') || firstPage.includes('Short Code:'))) {
+        parserUsed = 'Lazada Income Statement';
+        txns = parseLazadaIncomeStatement(pages);
       } else if (/NO\.\s*JP-[SQC]\d+/.test(firstPage) || firstPage.includes('eBay Japan G.K')) {
         // 큐텐(Qoo10) 텍스트 PDF 영수증 (서비스수수료/Q캐시/스마트세일즈)
         parserUsed = 'Qoo10 PDF 영수증';
@@ -2500,7 +2547,7 @@ async function dispatchPlatformFile(file) {
           toast('이미지 PDF인데 OCR 라이브러리가 로드되지 않음', 'err');
           return;
         }
-        toast('PDF 양식을 자동 인식하지 못했습니다 (Shopee/Amazon/Etsy/Rakuten/Qoo10 지원)', 'err');
+        toast('PDF 양식을 자동 인식하지 못했습니다 (Shopee/Amazon/Etsy/Rakuten/Qoo10/Lazada 지원)', 'err');
         return;
       }
     } else if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
@@ -2516,10 +2563,6 @@ async function dispatchPlatformFile(file) {
       } else if (sample[0] && sample[0].includes && sample[0].some(c => String(c||'').includes('발생일'))) {
         parserUsed = 'Qoo10 송금수수료';
         txns = parseQooTransferXlsx(wb);
-      } else if (/라자다|Lazada/i.test(sampleText)) {
-        // 라자다 광고 Excel 자동감지 (제목에 "라자다 인플루언서 광고(국가)" 등 포함)
-        parserUsed = 'Lazada 광고 Excel';
-        txns = parseLazadaAdExcel(wb);
       } else {
         // 일반 CSV-like xlsx → 기존 파서로 fallback (Promise 대기)
         await handlePlatformCsv(file, platformId);
@@ -2536,22 +2579,32 @@ async function dispatchPlatformFile(file) {
       return;
     }
 
-    // 라우팅: _route 있으면 해당 카드, 없으면 현재 카드
-    const y = state.selectedYear;
-    if (!state.platformData[y]) state.platformData[y] = {};
+    // 라우팅: txn 날짜의 연도로 저장 (selectedYear와 다를 수 있음)
     const counts = {};
+    const yearsTouched = new Set();
     for (const t of txns) {
       const target = t._route || platformId;
       delete t._route;
-      if (!state.platformData[y][target]) state.platformData[y][target] = [];
-      state.platformData[y][target].push(t);
+      const yr = (t.date && /^\d{4}/.test(t.date)) ? t.date.substring(0, 4) : state.selectedYear;
+      if (!state.platformData[yr]) state.platformData[yr] = {};
+      if (!state.platformData[yr][target]) state.platformData[yr][target] = [];
+      state.platformData[yr][target].push(t);
+      yearsTouched.add(yr);
       counts[target] = (counts[target] || 0) + 1;
     }
     saveState();
     renderDetailTable();
     renderDashboard();
+    if (typeof renderYearChips === 'function') renderYearChips();
+
     const summary = Object.entries(counts).map(([k,v]) => (PLATFORMS.find(pp => pp.id === k)?.name || k) + ' ' + v + '건').join(', ');
-    toast(parserUsed + ' 파서 — ' + summary, 'ok');
+    const yearList = [...yearsTouched];
+    const otherYears = yearList.filter(y => y !== state.selectedYear);
+    if (otherYears.length) {
+      toast(parserUsed + ' — ' + summary + ' (' + otherYears.join(', ') + '년 탭에서 확인하세요)', 'ok');
+    } else {
+      toast(parserUsed + ' 파서 — ' + summary, 'ok');
+    }
   } catch (err) {
     console.error(err);
     toast('파일 처리 실패: ' + err.message, 'err');
@@ -10642,160 +10695,6 @@ console.log('v3.32 — 코드 복사 방지 적용 (관리자 제외, deterrent 
 })();
 </script>
 
-<!-- ============ 라자다 매출 입력 모달 ============ -->
-<div id="lzd-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000; align-items:center; justify-content:center;">
-  <div style="background:#fff; border-radius:12px; padding:24px 28px; max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
-    <h3 style="font-size:17px; font-weight:700; margin-bottom:6px;">라자다 매출 + 수수료율 입력</h3>
-    <p style="font-size:12px; color:#6b7280; margin-bottom:16px;">매출 금액에 수수료율을 곱해서 지급수수료로 자동 등록됩니다.</p>
-    <div id="lzd-country-label" style="font-size:13px; color:#4f46e5; background:#eef2ff; padding:8px 12px; border-radius:7px; margin-bottom:14px; font-weight:600;"></div>
 
-    <div style="margin-bottom:14px;">
-      <label style="font-size:12px; font-weight:600; color:#374151; display:block; margin-bottom:4px;">거래일 (보통 정산일 또는 월말)</label>
-      <input type="date" id="lzd-date" style="width:100%; padding:9px 11px; border:1px solid #d1d5db; border-radius:7px; font-size:13px;">
-    </div>
-
-    <div style="margin-bottom:14px;">
-      <label style="font-size:12px; font-weight:600; color:#374151; display:block; margin-bottom:4px;">매출 금액 (<span id="lzd-cur"></span>)</label>
-      <input type="text" id="lzd-sales" placeholder="예: 100,000" style="width:100%; padding:9px 11px; border:1px solid #d1d5db; border-radius:7px; font-size:13px;">
-    </div>
-
-    <div style="margin-bottom:14px;">
-      <label style="font-size:12px; font-weight:600; color:#374151; display:block; margin-bottom:4px;">수수료율 (%)</label>
-      <input type="number" id="lzd-rate" step="0.01" placeholder="예: 5.0" style="width:100%; padding:9px 11px; border:1px solid #d1d5db; border-radius:7px; font-size:13px;">
-      <div id="lzd-rate-hint" style="font-size:11px; color:#9ca3af; margin-top:3px;"></div>
-    </div>
-
-    <div id="lzd-preview" style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px; margin-bottom:18px; font-size:13px;">
-      <div style="color:#6b7280; font-size:11px;">계산될 지급수수료</div>
-      <div id="lzd-fee" style="font-size:18px; font-weight:700; color:#1f2937;">—</div>
-    </div>
-
-    <div style="display:flex; gap:8px; justify-content:flex-end;">
-      <button id="lzd-cancel" class="btn">취소</button>
-      <button id="lzd-submit" class="btn primary">등록</button>
-    </div>
-  </div>
-</div>
-
-<script>
-// ============ 라자다 매출 입력 모달 로직 ============
-(function() {
-  const LZD_RATE_KEY = 'lzdFeeRates_v1';
-  function getRates() {
-    try { return JSON.parse(localStorage.getItem(LZD_RATE_KEY) || '{}'); } catch { return {}; }
-  }
-  function saveRate(platformId, rate) {
-    const r = getRates(); r[platformId] = rate;
-    localStorage.setItem(LZD_RATE_KEY, JSON.stringify(r));
-  }
-
-  const modal = document.getElementById('lzd-modal');
-  const labelEl = document.getElementById('lzd-country-label');
-  const curEl = document.getElementById('lzd-cur');
-  const dateInput = document.getElementById('lzd-date');
-  const salesInput = document.getElementById('lzd-sales');
-  const rateInput = document.getElementById('lzd-rate');
-  const rateHint = document.getElementById('lzd-rate-hint');
-  const feeEl = document.getElementById('lzd-fee');
-  const cancelBtn = document.getElementById('lzd-cancel');
-  const submitBtn = document.getElementById('lzd-submit');
-
-  let curPlatformId = null;
-
-  function recalcFee() {
-    const sales = parseFloat((salesInput.value || '').replace(/[^\d.-]/g, ''));
-    const rate = parseFloat(rateInput.value);
-    if (isNaN(sales) || sales <= 0 || isNaN(rate) || rate < 0) { feeEl.textContent = '—'; return; }
-    const fee = sales * rate / 100;
-    const cur = curEl.textContent;
-    feeEl.textContent = cur + ' ' + fee.toLocaleString(undefined, {maximumFractionDigits: 2});
-  }
-  salesInput.addEventListener('input', recalcFee);
-  rateInput.addEventListener('input', recalcFee);
-
-  function open(platformId) {
-    const p = PLATFORMS.find(x => x.id === platformId);
-    if (!p) return;
-    curPlatformId = platformId;
-    labelEl.textContent = p.name + ' (' + p.currency + ')';
-    curEl.textContent = p.currency;
-    salesInput.value = '';
-    feeEl.textContent = '—';
-    // 이전에 사용한 수수료율 복원
-    const rates = getRates();
-    if (rates[platformId] != null) {
-      rateInput.value = rates[platformId];
-      rateHint.textContent = '직전에 입력한 수수료율 ' + rates[platformId] + '% (수정 가능)';
-    } else {
-      rateInput.value = '';
-      rateHint.textContent = '아직 저장된 수수료율 없음';
-    }
-    // 기본 날짜 = 오늘 또는 선택된 연도 12월말
-    const today = new Date();
-    dateInput.value = today.toISOString().substring(0, 10);
-    modal.style.display = 'flex';
-    setTimeout(() => salesInput.focus(), 50);
-  }
-  function close() { modal.style.display = 'none'; }
-
-  cancelBtn.onclick = close;
-  modal.onclick = e => { if (e.target === modal) close(); };
-
-  submitBtn.onclick = () => {
-    if (!curPlatformId) return;
-    const sales = parseFloat((salesInput.value || '').replace(/[^\d.-]/g, ''));
-    const rate = parseFloat(rateInput.value);
-    const date = dateInput.value;
-    if (!date) { alert('거래일을 입력해주세요'); return; }
-    if (isNaN(sales) || sales <= 0) { alert('유효한 매출 금액을 입력해주세요'); return; }
-    if (isNaN(rate) || rate < 0) { alert('유효한 수수료율(%)을 입력해주세요'); return; }
-
-    const fee = sales * rate / 100;
-    const p = PLATFORMS.find(x => x.id === curPlatformId);
-    const y = state.selectedYear;
-    if (!state.platformData[y]) state.platformData[y] = {};
-    if (!state.platformData[y][curPlatformId]) state.platformData[y][curPlatformId] = [];
-    state.platformData[y][curPlatformId].push({
-      id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
-      date,
-      account: '지급수수료',
-      name: '라자다 판매수수료 (' + rate + '%)',
-      amount: Math.abs(fee),
-      currency: p.currency,
-      memo: '매출 ' + p.currency + ' ' + sales.toLocaleString() + ' × ' + rate + '%'
-    });
-    // 매출 참고도 기록
-    state.platformData[y][curPlatformId].push({
-      id: 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
-      date,
-      account: '매출참고',
-      name: '라자다 매출',
-      amount: Math.abs(sales),
-      currency: p.currency,
-      memo: '입력 매출액 (수수료율 ' + rate + '% 적용)'
-    });
-    saveState();
-    saveRate(curPlatformId, rate);
-    if (typeof renderDashboard === 'function') renderDashboard();
-    if (typeof renderDetailTable === 'function') renderDetailTable();
-    toast(p.name + ' — 매출 ' + p.currency + sales.toLocaleString() + ' / 수수료 ' + p.currency + Math.round(fee).toLocaleString() + ' 등록', 'ok');
-    close();
-  };
-
-  window.openLazadaSalesModal = open;
-})();
-
-// 라자다 카드의 "+ 데이터 입력" (edit) 버튼만 모달로 — "자료 업로드"는 정상 파일창
-document.addEventListener('click', e => {
-  const btn = e.target.closest('button[data-act="edit"]');
-  if (!btn) return;
-  const pid = btn.dataset.pl;
-  if (!pid || !pid.startsWith('lazada_')) return;
-  e.preventDefault();
-  e.stopPropagation();
-  e.stopImmediatePropagation();
-  window.openLazadaSalesModal(pid);
-}, true);
-</script>
 </body>
 </html>
