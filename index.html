@@ -2515,22 +2515,28 @@ async function dispatchPlatformFile(file) {
         const totalChars = pages.reduce((s,p) => s + p.length, 0);
         if (totalChars < 200 * pages.length) {
           // 이미지 PDF — OCR 가능하면 OCR 폴백 (큐텐 영수증 등)
-          // 큐텐(qoo10) 카드에서 이미지 PDF 업로드 시 — 빠른 수동 입력 모달
-          if (platformId === 'qoo10' && typeof window.openQooQuickModal === 'function') {
+          // 큐텐(qoo10) 영수증 이미지 PDF — platformId 또는 파일명으로 감지
+          const fname = file.name;
+          const isQooReceipt = platformId === 'qoo10' || /큐텐|qoo10|영수증.*JP|JP-[SQC]\d|Q캐쉬|스마트세일즈|서비스수수료/i.test(fname);
+          console.log('[dispatch] 이미지 PDF — platformId=' + platformId + ', isQooReceipt=' + isQooReceipt + ', fname=' + fname);
+          if (isQooReceipt && typeof window.openQooQuickModal === 'function') {
             // 파일명에서 힌트 추출
-            const fname = file.name;
             let hintInvoice = '';
             const noHint = fname.match(/JP-[SQCsqc]\d+/i);
             if (noHint) hintInvoice = noHint[0].toUpperCase();
-            // 기본 타입 힌트 (파일명 기반)
             if (!hintInvoice) {
               if (/Q캐쉬|q.?cash/i.test(fname)) hintInvoice = 'JP-Q';
               else if (/스마트세일즈|smart.?sales/i.test(fname)) hintInvoice = 'JP-C';
               else if (/서비스수수료|service.?fee/i.test(fname)) hintInvoice = 'JP-S';
             }
+            // qoo10 카드로 강제 라우팅 (다른 카드에서 업로드해도 큐텐 카드에 등록되도록)
+            state.detailPlatformId = 'qoo10';
             window.openQooQuickModal(fname, { invoice: hintInvoice });
-            toast('큐텐 PDF 자동인식 불가 — 빠른 입력 모달에서 3가지 정보 입력해주세요', '');
+            toast('큐텐 PDF 감지 — 모달에서 영수증번호/날짜/합계 입력해주세요', 'ok');
             return;
+          }
+          if (!isQooReceipt && typeof window.openQooQuickModal !== 'function') {
+            console.error('[dispatch] openQooQuickModal 함수가 정의되지 않음! 모달 스크립트 로드 실패 가능');
           }
           // OCR 시도 (다른 플랫폼)
           if (window.Tesseract && typeof processPdfFile === 'function') {
@@ -10696,5 +10702,357 @@ console.log('v3.32 — 코드 복사 방지 적용 (관리자 제외, deterrent 
 </script>
 
 
+
+<!-- ============ Firebase 통합 (인증 + Firestore + IP 추적) ============ -->
+<style>
+  #fb-login-overlay {
+    position: fixed; inset: 0; z-index: 99999;
+    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  #fb-login-overlay.hidden { display: none; }
+  .fb-login-box {
+    background: #fff; border-radius: 16px; padding: 36px 40px;
+    max-width: 440px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  }
+  .fb-login-box h2 { font-size: 22px; font-weight: 800; margin-bottom: 8px; color: #1f2937; }
+  .fb-login-box .sub { font-size: 13px; color: #6b7280; margin-bottom: 24px; }
+  .fb-login-box label { font-size: 12px; font-weight: 600; color: #374151; display: block; margin-bottom: 6px; }
+  .fb-login-box input { width: 100%; padding: 11px 14px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+  .fb-login-box input:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+  .fb-login-box button.primary {
+    width: 100%; padding: 12px; margin-top: 16px;
+    background: #4f46e5; color: #fff; border: none; border-radius: 8px;
+    font-size: 14px; font-weight: 700; cursor: pointer;
+  }
+  .fb-login-box button.primary:hover { background: #4338ca; }
+  .fb-login-box button.primary:disabled { background: #9ca3af; cursor: not-allowed; }
+  .fb-login-box .msg { margin-top: 14px; padding: 11px 13px; border-radius: 8px; font-size: 13px; line-height: 1.5; }
+  .fb-login-box .msg.info { background: #dbeafe; color: #1e40af; }
+  .fb-login-box .msg.success { background: #d1fae5; color: #065f46; }
+  .fb-login-box .msg.error { background: #fee2e2; color: #991b1b; }
+  .fb-user-bar {
+    background: #f3f4f6; border-bottom: 1px solid #e5e7eb;
+    padding: 8px 24px; display: flex; justify-content: space-between; align-items: center;
+    font-size: 12px; color: #4b5563;
+  }
+  .fb-user-bar .user-info { display: flex; align-items: center; gap: 8px; }
+  .fb-user-bar .badge { background: #4f46e5; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .fb-user-bar .badge.admin { background: #dc2626; }
+  .fb-user-bar button {
+    background: none; border: 1px solid #d1d5db; padding: 4px 10px;
+    border-radius: 6px; font-size: 11px; cursor: pointer; color: #4b5563;
+  }
+  .fb-user-bar button:hover { background: #fff; }
+  .fb-admin-alert {
+    background: #fef3c7; border-bottom: 2px solid #f59e0b;
+    padding: 10px 24px; font-size: 13px; color: #78350f;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .fb-admin-alert.hidden { display: none; }
+</style>
+
+<!-- 로그인 오버레이 -->
+<div id="fb-login-overlay">
+  <div class="fb-login-box">
+    <h2>📊 플랫폼 수수료 계산기</h2>
+    <div class="sub">로그인하려면 회사 이메일을 입력하세요. 메일로 받은 링크를 클릭하면 자동으로 로그인됩니다.</div>
+
+    <div id="fb-step-input">
+      <label>이메일 주소</label>
+      <input type="email" id="fb-email-input" placeholder="example@taxexpert.kr" autocomplete="email">
+      <button class="primary" id="fb-send-link-btn">로그인 링크 받기</button>
+    </div>
+
+    <div id="fb-step-sent" style="display:none;">
+      <div class="msg success">
+        ✓ <strong id="fb-sent-email"></strong> 으로 로그인 링크를 발송했습니다.<br><br>
+        메일함을 확인하시고 <strong>"로그인하기"</strong> 링크를 클릭해주세요. (스팸함도 확인)
+      </div>
+      <button class="primary" id="fb-resend-btn" style="background:#6b7280;">다른 이메일로 다시 시도</button>
+    </div>
+
+    <div id="fb-step-loading" style="display:none;">
+      <div class="msg info">로그인 처리 중...</div>
+    </div>
+
+    <div id="fb-msg-area"></div>
+  </div>
+</div>
+
+<!-- 사용자 바 (로그인 후 표시) -->
+<div class="fb-user-bar" id="fb-user-bar" style="display:none;">
+  <div class="user-info">
+    <span>👤 <strong id="fb-user-email"></strong></span>
+    <span class="badge" id="fb-user-badge">사용자</span>
+    <span style="color:#9ca3af;">·</span>
+    <span id="fb-sync-status" style="color:#10b981;">☁ 동기화됨</span>
+  </div>
+  <div>
+    <button id="fb-logout-btn">로그아웃</button>
+  </div>
+</div>
+
+<!-- 관리자 경고 배너 -->
+<div class="fb-admin-alert hidden" id="fb-admin-alert">
+  <div>⚠️ <strong id="fb-alert-text"></strong></div>
+  <button id="fb-alert-close" style="background:none; border:none; cursor:pointer; font-size:16px;">✕</button>
+</div>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js';
+import {
+  getAuth, sendSignInLinkToEmail, signInWithEmailLink, isSignInWithEmailLink,
+  onAuthStateChanged, signOut, setPersistence, browserLocalPersistence
+} from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js';
+import {
+  getFirestore, doc, getDoc, setDoc, collection, addDoc, query, where, orderBy, limit, getDocs,
+  serverTimestamp, Timestamp
+} from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js';
+
+// ===== Firebase 설정 =====
+const firebaseConfig = {
+  apiKey: "AIzaSyAOW6OlIdNS1XAvsVY2JoGTO8czFC7vywo",
+  authDomain: "platform-calculator.firebaseapp.com",
+  projectId: "platform-calculator",
+  storageBucket: "platform-calculator.firebasestorage.app",
+  messagingSenderId: "52446715267",
+  appId: "1:52446715267:web:bbe7b7b6c38e524a8caab6",
+  measurementId: "G-THB30LPKQL"
+};
+const ADMIN_EMAIL = 'm1018@taxexpert.kr';
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+await setPersistence(auth, browserLocalPersistence);
+
+// 전역 노출 (다른 스크립트에서 사용)
+window.fbApp = app;
+window.fbAuth = auth;
+window.fbDb = db;
+window.fbAdminEmail = ADMIN_EMAIL;
+
+// ===== UI 헬퍼 =====
+const overlay = document.getElementById('fb-login-overlay');
+const stepInput = document.getElementById('fb-step-input');
+const stepSent = document.getElementById('fb-step-sent');
+const stepLoading = document.getElementById('fb-step-loading');
+const msgArea = document.getElementById('fb-msg-area');
+const emailInput = document.getElementById('fb-email-input');
+const sendBtn = document.getElementById('fb-send-link-btn');
+const resendBtn = document.getElementById('fb-resend-btn');
+const sentEmailEl = document.getElementById('fb-sent-email');
+const userBar = document.getElementById('fb-user-bar');
+const userEmailEl = document.getElementById('fb-user-email');
+const userBadge = document.getElementById('fb-user-badge');
+const logoutBtn = document.getElementById('fb-logout-btn');
+const alertBanner = document.getElementById('fb-admin-alert');
+const alertText = document.getElementById('fb-alert-text');
+const alertClose = document.getElementById('fb-alert-close');
+
+function showStep(name) {
+  stepInput.style.display = name === 'input' ? 'block' : 'none';
+  stepSent.style.display = name === 'sent' ? 'block' : 'none';
+  stepLoading.style.display = name === 'loading' ? 'block' : 'none';
+}
+
+function showMsg(text, kind) {
+  msgArea.innerHTML = '<div class="msg ' + (kind || 'info') + '">' + text + '</div>';
+}
+
+// ===== 이메일 링크 발송 =====
+async function sendLoginLink(email) {
+  const actionCodeSettings = {
+    url: window.location.href.split('#')[0].split('?')[0],
+    handleCodeInApp: true,
+  };
+  await sendSignInLinkToEmail(auth, email, actionCodeSettings);
+  window.localStorage.setItem('emailForSignIn', email);
+}
+
+sendBtn.addEventListener('click', async () => {
+  const email = emailInput.value.trim().toLowerCase();
+  if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) {
+    showMsg('올바른 이메일 주소를 입력해주세요', 'error');
+    return;
+  }
+  sendBtn.disabled = true;
+  sendBtn.textContent = '발송 중...';
+  try {
+    await sendLoginLink(email);
+    sentEmailEl.textContent = email;
+    showStep('sent');
+    msgArea.innerHTML = '';
+  } catch (e) {
+    showMsg('링크 발송 실패: ' + e.message, 'error');
+    sendBtn.disabled = false;
+    sendBtn.textContent = '로그인 링크 받기';
+  }
+});
+
+resendBtn.addEventListener('click', () => {
+  showStep('input');
+  emailInput.value = '';
+  sendBtn.disabled = false;
+  sendBtn.textContent = '로그인 링크 받기';
+  msgArea.innerHTML = '';
+});
+
+emailInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendBtn.click();
+});
+
+// ===== 페이지 로드 시 — 링크 클릭으로 들어왔는지 확인 =====
+async function handleEmailLinkSignIn() {
+  if (!isSignInWithEmailLink(auth, window.location.href)) return false;
+
+  showStep('loading');
+  let email = window.localStorage.getItem('emailForSignIn');
+  if (!email) {
+    email = window.prompt('확인을 위해 로그인 시도한 이메일 주소를 다시 입력해주세요');
+    if (!email) {
+      showMsg('이메일 확인 취소됨', 'error');
+      showStep('input');
+      return false;
+    }
+  }
+
+  try {
+    await signInWithEmailLink(auth, email, window.location.href);
+    window.localStorage.removeItem('emailForSignIn');
+    // URL에서 sign-in 파라미터 제거
+    window.history.replaceState({}, document.title, window.location.pathname);
+    return true;
+  } catch (e) {
+    showMsg('로그인 실패: ' + e.message + ' (링크가 만료됐거나 다른 디바이스에서 발송된 링크일 수 있습니다)', 'error');
+    showStep('input');
+    return false;
+  }
+}
+
+// ===== 로그아웃 =====
+logoutBtn.addEventListener('click', async () => {
+  if (!confirm('로그아웃 하시겠습니까?')) return;
+  await signOut(auth);
+  window.location.reload();
+});
+
+// ===== 인증 상태 변경 감지 =====
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    // 로그인됨
+    overlay.classList.add('hidden');
+    userBar.style.display = 'flex';
+    userEmailEl.textContent = user.email;
+    const isAdmin = user.email === ADMIN_EMAIL;
+    if (isAdmin) {
+      userBadge.textContent = '관리자';
+      userBadge.classList.add('admin');
+    } else {
+      userBadge.textContent = '사용자';
+      userBadge.classList.remove('admin');
+    }
+    window.fbCurrentUser = user;
+    window.fbIsAdmin = isAdmin;
+
+    // IP 추적 + 알림 처리
+    await trackLoginIP(user, isAdmin);
+
+    // 관리자면 최근 알림 표시
+    if (isAdmin) {
+      await showAdminAlerts();
+    }
+
+    // Firestore 데이터 레이어 활성화 (다음 단계에서 구현)
+    if (typeof window.fbInitDataLayer === 'function') {
+      await window.fbInitDataLayer(user, isAdmin);
+    }
+  } else {
+    // 로그아웃 상태 — 링크 클릭 처리 시도
+    const handled = await handleEmailLinkSignIn();
+    if (!handled) {
+      overlay.classList.remove('hidden');
+      userBar.style.display = 'none';
+      showStep('input');
+    }
+  }
+});
+
+// ===== IP 추적 =====
+async function getCurrentIP() {
+  try {
+    const r = await fetch('https://api.ipify.org?format=json');
+    const j = await r.json();
+    return j.ip;
+  } catch (e) {
+    console.warn('IP 조회 실패', e);
+    return null;
+  }
+}
+
+async function trackLoginIP(user, isAdmin) {
+  const ip = await getCurrentIP();
+  if (!ip) return;
+
+  const userDocRef = doc(db, 'users', user.uid);
+  const snap = await getDoc(userDocRef);
+  const lastIP = snap.exists() ? snap.data().lastIP : null;
+  const userAgent = navigator.userAgent.substring(0, 200);
+
+  // 사용자 문서 업데이트
+  await setDoc(userDocRef, {
+    email: user.email,
+    lastIP: ip,
+    lastLogin: serverTimestamp(),
+    userAgent
+  }, { merge: true });
+
+  // IP 변경 감지 → alerts 컬렉션에 추가
+  if (lastIP && lastIP !== ip) {
+    await addDoc(collection(db, 'alerts'), {
+      type: 'ip_change',
+      userEmail: user.email,
+      userId: user.uid,
+      previousIP: lastIP,
+      newIP: ip,
+      userAgent,
+      timestamp: serverTimestamp(),
+      read: false
+    });
+    console.log('[Firebase] IP 변경 감지:', lastIP, '→', ip, '— 관리자 알림 생성');
+  }
+}
+
+// ===== 관리자: 최근 IP 변경 알림 표시 =====
+async function showAdminAlerts() {
+  try {
+    const q = query(
+      collection(db, 'alerts'),
+      where('read', '==', false),
+      orderBy('timestamp', 'desc'),
+      limit(5)
+    );
+    const snap = await getDocs(q);
+    if (snap.empty) return;
+    const alerts = [];
+    snap.forEach(d => alerts.push({ id: d.id, ...d.data() }));
+    const recent = alerts[0];
+    alertText.textContent = '관리자 경고: ' + recent.userEmail + ' 가 새 IP(' + recent.newIP + ')에서 로그인 — ' + alerts.length + '건 미확인';
+    alertBanner.classList.remove('hidden');
+    alertClose.onclick = async () => {
+      // 모든 알림 읽음 처리
+      for (const a of alerts) {
+        await setDoc(doc(db, 'alerts', a.id), { read: true }, { merge: true });
+      }
+      alertBanner.classList.add('hidden');
+    };
+  } catch (e) {
+    console.warn('알림 조회 실패', e);
+  }
+}
+
+console.log('Firebase 인증 시스템 초기화 완료');
+</script>
 </body>
 </html>
