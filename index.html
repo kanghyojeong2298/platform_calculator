@@ -222,7 +222,7 @@
     <div class="settings-wrap">
 
       <div class="section">
-        <h3>① 월별 평균환율 업로드</h3>
+        <h3>① 월별 평균환율 업로드 <button class="btn btn-sm" type="button" onclick="if(typeof fbShowFxHistory==='function') fbShowFxHistory(); else alert('Firebase 로그인 후 사용 가능');" style="float:right; font-size:11px;">📊 변경 이력</button></h3>
         <div class="desc">외국환중개(smbs.or.kr) 매매기준율 / 재정환율을 월별로 등록합니다. 통화별로 따로 업로드 가능합니다.</div>
         <label class="upload-zone" id="up-zone">
           <div class="up-icon">↑</div>
@@ -803,6 +803,14 @@ function handleFxFile(file, replaceCurrency) {
         state.fxData[year].sources[cur] = { filename: file.name, uploaded: today, dailyCount: totalDays, monthCount };
       }
       saveState();
+      // Firebase 환율 변경 이력 기록
+      if (typeof window.fbLogFxChange === 'function') {
+        window.fbLogFxChange('upload', {
+          year,
+          currencies: curList,
+          note: file.name + ' (' + curList.length + '개 통화 등록)'
+        });
+      }
       toast(year + '년 ' + curList.join(',') + ' (' + curList.map(c => CURRENCY_INFO[c]?.country).filter(Boolean).join('/') + ') 환율 등록 완료', 'ok');
       renderSettings();
       renderYearChips();
@@ -817,6 +825,10 @@ function handleFxFile(file, replaceCurrency) {
 
 function deleteCurrencyFromYear(year, currency) {
   if (!confirm(year + '년 ' + currency + ' 환율 삭제?')) return;
+  // Firebase 환율 변경 이력 기록 (삭제 전 기록)
+  if (typeof window.fbLogFxChange === 'function') {
+    window.fbLogFxChange('delete', { year, currencies: [currency], note: currency + ' 환율 삭제' });
+  }
   const yd = state.fxData[year];
   if (!yd) return;
   if (yd.rates && yd.rates[currency]) delete yd.rates[currency];
@@ -10798,6 +10810,22 @@ console.log('v3.32 — 코드 복사 방지 적용 (관리자 제외, deterrent 
   </div>
 </div>
 
+<!-- 환율 변경 이력 모달 -->
+<div id="fb-fx-history-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:12px; max-width:600px; width:90%; max-height:80vh; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+    <div style="padding:18px 22px; border-bottom:1px solid #e5e7eb; display:flex; justify-content:space-between; align-items:center;">
+      <h3 style="font-size:16px; font-weight:700;">📊 환율 변경 이력 (최근 50건)</h3>
+      <button onclick="document.getElementById('fb-fx-history-modal').style.display='none';" style="background:none; border:none; font-size:18px; cursor:pointer; color:#6b7280;">✕</button>
+    </div>
+    <div id="fb-fx-history-list" style="overflow-y:auto; flex:1;">
+      <div style="padding:20px; color:#6b7280; text-align:center;">이력 불러오는 중...</div>
+    </div>
+    <div style="padding:12px 22px; border-top:1px solid #e5e7eb; font-size:11px; color:#9ca3af;">
+      💡 환율 등록/삭제 작업은 모두 자동 기록됩니다 (누가, 언제, 무엇을)
+    </div>
+  </div>
+</div>
+
 <!-- 관리자 경고 배너 -->
 <div class="fb-admin-alert hidden" id="fb-admin-alert">
   <div>⚠️ <strong id="fb-alert-text"></strong></div>
@@ -11099,6 +11127,229 @@ async function showAdminAlerts() {
     console.warn('알림 조회 실패', e);
   }
 }
+
+// ============ Firestore 데이터 레이어 ============
+// 사용자별 platformData + 공유 fxData
+// localStorage를 cache로 활용, Firestore가 source of truth
+
+let _saveCloudTimer = null;
+let _isLoadingCloud = false;
+
+async function saveStateToCloud(user) {
+  if (!user || _isLoadingCloud) return;
+  try {
+    document.getElementById('fb-sync-status').textContent = '☁ 저장 중...';
+    // 사용자별 platformData
+    await setDoc(doc(db, 'users', user.uid), {
+      email: user.email,
+      platformData: window.state.platformData || {},
+      selectedYear: window.state.selectedYear,
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    // 공유 fxData (모든 로그인 사용자가 같은 환율 사용)
+    if (window.state.fxData && Object.keys(window.state.fxData).length) {
+      await setDoc(doc(db, 'shared', 'fxData'), {
+        fxData: window.state.fxData,
+        updatedAt: serverTimestamp(),
+        updatedBy: user.email
+      });
+    }
+    // 만료 시간 업데이트
+    const lastSignInMs = new Date(user.metadata.lastSignInTime).getTime();
+    const remainHours = Math.max(0, Math.round((SESSION_DURATION_MS - (Date.now() - lastSignInMs)) / 3600000));
+    document.getElementById('fb-sync-status').textContent = '☁ 동기화됨 · 세션 ' + remainHours + 'h 남음';
+  } catch (e) {
+    console.error('[Firebase] 저장 실패', e);
+    document.getElementById('fb-sync-status').textContent = '⚠ 저장 실패';
+    document.getElementById('fb-sync-status').style.color = '#dc2626';
+  }
+}
+
+function debounceSaveToCloud(user) {
+  if (_saveCloudTimer) clearTimeout(_saveCloudTimer);
+  _saveCloudTimer = setTimeout(() => saveStateToCloud(user), 1500);
+}
+
+window.fbInitDataLayer = async (user, isAdmin) => {
+  _isLoadingCloud = true;
+  document.getElementById('fb-sync-status').textContent = '☁ 데이터 불러오는 중...';
+
+  try {
+    // === 1. 사용자별 platformData 가져오기 ===
+    const userSnap = await getDoc(doc(db, 'users', user.uid));
+    const cloudUserData = userSnap.exists() ? userSnap.data() : null;
+    const cloudPlatformData = cloudUserData && cloudUserData.platformData;
+
+    // === 2. 공유 fxData 가져오기 ===
+    const fxSnap = await getDoc(doc(db, 'shared', 'fxData'));
+    const cloudFxData = fxSnap.exists() ? fxSnap.data().fxData : null;
+
+    // === 3. localStorage 데이터 (마이그레이션용) ===
+    let localData = null;
+    try {
+      const raw = localStorage.getItem('feeCalcData_v2');
+      if (raw) localData = JSON.parse(raw);
+    } catch (e) {}
+
+    // === 4. fxData 결정 — 공유 우선, 없으면 로컬 → 공유에 업로드, 없으면 DEFAULT ===
+    if (cloudFxData) {
+      window.state.fxData = cloudFxData;
+      console.log('[Firebase] 공유 환율 ' + Object.keys(cloudFxData).length + '개 연도 로드');
+    } else if (localData && localData.fxData && Object.keys(localData.fxData).length) {
+      window.state.fxData = localData.fxData;
+      console.log('[Firebase] 로컬 환율을 공유로 마이그레이션 (' + Object.keys(localData.fxData).length + '개 연도)');
+      await setDoc(doc(db, 'shared', 'fxData'), {
+        fxData: localData.fxData,
+        updatedAt: serverTimestamp(),
+        updatedBy: user.email,
+        migratedFromLocal: true
+      });
+    }
+    // (DEFAULT_FX_DATA는 loadState에서 자동 머지되므로 추가 작업 불필요)
+
+    // === 5. platformData 결정 — 클라우드 우선, 없으면 로컬 → 클라우드 마이그레이션 ===
+    if (cloudPlatformData) {
+      window.state.platformData = cloudPlatformData;
+      const totalTxns = Object.values(cloudPlatformData).reduce((s, year) =>
+        s + Object.values(year || {}).reduce((s2, arr) => s2 + (arr || []).length, 0), 0);
+      console.log('[Firebase] 사용자 데이터 로드 — ' + totalTxns + '건');
+    } else if (localData && localData.platformData) {
+      window.state.platformData = localData.platformData;
+      const totalTxns = Object.values(localData.platformData).reduce((s, year) =>
+        s + Object.values(year || {}).reduce((s2, arr) => s2 + (arr || []).length, 0), 0);
+      console.log('[Firebase] 로컬 거래내역을 사용자 계정으로 마이그레이션 — ' + totalTxns + '건');
+      await setDoc(doc(db, 'users', user.uid), {
+        email: user.email,
+        platformData: localData.platformData,
+        selectedYear: localData.selectedYear || window.state.selectedYear,
+        migratedFromLocal: true,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    } else {
+      window.state.platformData = {};
+    }
+
+    // selectedYear 복원
+    if (cloudUserData && cloudUserData.selectedYear) {
+      window.state.selectedYear = cloudUserData.selectedYear;
+    }
+
+    // === 6. saveState 오버라이드 — localStorage + Firestore 양쪽 저장 ===
+    const origSaveState = window.saveState;
+    window.saveState = function() {
+      if (typeof origSaveState === 'function') origSaveState();
+      debounceSaveToCloud(window.fbCurrentUser);
+    };
+
+    // === 7. 화면 다시 렌더 ===
+    _isLoadingCloud = false;
+    if (typeof window.renderDashboard === 'function') window.renderDashboard();
+    if (typeof window.renderSettings === 'function') window.renderSettings();
+    if (typeof window.renderYearChips === 'function') window.renderYearChips();
+
+    document.getElementById('fb-sync-status').textContent = '☁ 동기화됨';
+    console.log('[Firebase] 데이터 레이어 초기화 완료');
+  } catch (e) {
+    console.error('[Firebase] 데이터 로드 실패', e);
+    document.getElementById('fb-sync-status').textContent = '⚠ 로드 실패 (오프라인?)';
+    document.getElementById('fb-sync-status').style.color = '#dc2626';
+    _isLoadingCloud = false;
+  }
+};
+
+// === 환율 변경 이력 기록 ===
+window.fbLogFxChange = async function(action, details) {
+  const user = window.fbCurrentUser;
+  if (!user) return;
+  try {
+    await addDoc(collection(db, 'fxHistory'), {
+      action,            // 'upload' | 'delete' | 'manual'
+      details: details || {},
+      userEmail: user.email,
+      userId: user.uid,
+      timestamp: serverTimestamp()
+    });
+    console.log('[Firebase] 환율 이력 기록:', action, details);
+  } catch (e) {
+    console.error('[Firebase] 이력 기록 실패', e);
+  }
+};
+
+// === 환율 변경 이력 조회 + 모달 표시 ===
+window.fbShowFxHistory = async function() {
+  const modal = document.getElementById('fb-fx-history-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  const listEl = document.getElementById('fb-fx-history-list');
+  listEl.innerHTML = '<div style="padding:20px; color:#6b7280; text-align:center;">이력 불러오는 중...</div>';
+
+  try {
+    const q = query(
+      collection(db, 'fxHistory'),
+      orderBy('timestamp', 'desc'),
+      limit(50)
+    );
+    const snap = await getDocs(q);
+    if (snap.empty) {
+      listEl.innerHTML = '<div style="padding:20px; color:#6b7280; text-align:center;">아직 변경 이력이 없습니다</div>';
+      return;
+    }
+    let html = '';
+    snap.forEach(d => {
+      const data = d.data();
+      const ts = data.timestamp ? data.timestamp.toDate() : new Date();
+      const tsStr = ts.toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' });
+      const det = data.details || {};
+      let actionLabel = '', actionColor = '';
+      if (data.action === 'upload') { actionLabel = '환율 등록'; actionColor = '#10b981'; }
+      else if (data.action === 'delete') { actionLabel = '환율 삭제'; actionColor = '#dc2626'; }
+      else if (data.action === 'manual') { actionLabel = '수동 수정'; actionColor = '#f59e0b'; }
+      else { actionLabel = data.action || '변경'; actionColor = '#6b7280'; }
+
+      let detailStr = '';
+      if (det.year && det.currencies) {
+        detailStr = det.year + '년 ' + (Array.isArray(det.currencies) ? det.currencies.join(', ') : det.currencies);
+        if (det.note) detailStr += ' — ' + det.note;
+      } else if (det.note) {
+        detailStr = det.note;
+      } else {
+        detailStr = JSON.stringify(det).substring(0, 100);
+      }
+
+      html += '<div style="padding:12px 14px; border-bottom:1px solid #f3f4f6; display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">' +
+        '<div style="flex:1;">' +
+          '<div style="font-size:11px; color:#6b7280;">' + tsStr + ' · ' + (data.userEmail || '?') + '</div>' +
+          '<div style="font-size:13px; margin-top:3px;">' +
+            '<span style="background:' + actionColor + '; color:#fff; padding:1px 7px; border-radius:4px; font-size:10px; font-weight:600; margin-right:6px;">' + actionLabel + '</span>' +
+            detailStr +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    });
+    listEl.innerHTML = html;
+  } catch (e) {
+    listEl.innerHTML = '<div style="padding:20px; color:#dc2626; text-align:center;">이력 조회 실패: ' + e.message + '</div>';
+  }
+};
+
+// === 다른 사용자가 환율 갱신했는지 주기적으로 체크 (5분마다) ===
+setInterval(async () => {
+  if (!window.fbCurrentUser || _isLoadingCloud) return;
+  try {
+    const fxSnap = await getDoc(doc(db, 'shared', 'fxData'));
+    if (fxSnap.exists()) {
+      const cloudFx = fxSnap.data().fxData;
+      const localFxStr = JSON.stringify(window.state.fxData || {});
+      const cloudFxStr = JSON.stringify(cloudFx || {});
+      if (cloudFxStr !== localFxStr) {
+        window.state.fxData = cloudFx;
+        if (typeof window.renderSettings === 'function') window.renderSettings();
+        if (typeof window.renderDashboard === 'function') window.renderDashboard();
+        console.log('[Firebase] 다른 사용자가 환율 갱신함 — 자동 동기화');
+      }
+    }
+  } catch (e) { /* silent */ }
+}, 5 * 60 * 1000);
 
 console.log('Firebase 인증 시스템 초기화 완료');
 </script>
