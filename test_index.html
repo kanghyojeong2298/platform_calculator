@@ -11272,6 +11272,35 @@ window.fbInitDataLayer = async (user, isAdmin) => {
       }
     }
     applyAdminLock();
+
+    // 관리자: 옛 localStorage UI에 등록된 사용자들을 Firestore approvedEmails로 자동 동기화
+    if (isAdmin) {
+      try {
+        if (typeof authGetUsers === 'function') {
+          const localUsers = authGetUsers() || [];
+          let synced = 0;
+          for (const u of localUsers) {
+            if (!u.email) continue;
+            const em = u.email.toLowerCase();
+            const ap = await db.collection('approvedEmails').doc(em).get();
+            if (!ap.exists) {
+              await db.collection('approvedEmails').doc(em).set({
+                email: em,
+                addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                addedBy: user.email,
+                migratedFromLocal: true
+              });
+              synced++;
+            }
+          }
+          if (synced > 0) {
+            console.log('[Firebase 마이그레이션] localStorage 사용자 ' + synced + '명을 approvedEmails로 동기화');
+            if (typeof toast === 'function') toast('기존 팀원 ' + synced + '명 Firebase 동기화 완료', 'ok');
+          }
+        }
+      } catch (e) { console.warn('localStorage 사용자 동기화 실패', e); }
+    }
+
     const _origRS = window.renderSettings;
     window.renderSettings = function() {
       if (typeof _origRS === 'function') _origRS();
