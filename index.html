@@ -5215,6 +5215,9 @@ function hideAuthOverlay() {
 }
 
 function showFirstSetupScreen() {
+  // Firebase 인증으로 대체됨 — 화면 표시 안 함
+  return;
+  // 아래는 사용 안 함
   showAuthOverlay(`
     <h2>🎯 처음 사용 설정 — 관리자 등록</h2>
     <div class="sub">플랫폼 수수료 계산기를 처음 사용합니다.<br>관리자는 환율 등록·팀원 관리 권한을 가집니다.</div>
@@ -5546,11 +5549,14 @@ function disableFxUiForNonAdmin() {
 
 // ============ 초기화 — 페이지 로드 시 인증 흐름 ============
 function startAuthFlow() {
+  // Firebase 인증으로 대체됨 — 옛 화면 표시 안 함
+  return true;
+  // === 아래는 사용 안 함 (참조용) ===
+  /*
   const adminEmail = authGetAdmin();
   const currentEmail = authGetCurrent();
 
   if (!adminEmail) {
-    // 첫 사용 — 관리자 등록 화면
     showFirstSetupScreen();
     return false;
   }
@@ -5566,20 +5572,20 @@ function startAuthFlow() {
     showLoginScreen();
     return false;
   }
-  // 이미 로그인 됨
+  // 이미 로그인 됨 */ 
+  // 이전 함수 종료
   insertUserBar();
   return true;
 }
 
-// 시작 시 인증
+// 시작 시 인증 — Firebase가 처리하므로 옛 시스템 비활성화
 setTimeout(() => {
-  if (startAuthFlow()) {
-    // 이미 로그인된 상태이므로 데이터 다시 로드
-    loadState();
-    if (typeof renderDashboard === 'function') renderDashboard();
-    if (typeof renderSettings === 'function') renderSettings();
-  }
-  setTimeout(disableFxUiForNonAdmin, 800);
+  // startAuthFlow 비활성화 (Firebase로 대체됨)
+  // if (startAuthFlow()) { ... }
+  if (typeof loadState === 'function') loadState();
+  if (typeof renderDashboard === 'function') renderDashboard();
+  if (typeof renderSettings === 'function') renderSettings();
+  setTimeout(() => { if (typeof disableFxUiForNonAdmin === 'function') disableFxUiForNonAdmin(); }, 800);
 }, 100);
 
 // 설정탭 진입할 때마다 권한 UI 갱신
