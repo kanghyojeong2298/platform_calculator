@@ -975,9 +975,8 @@ function renderPlatformGroups() {
   // 큐텐 PDF 안내 배너 — OCR 한계 + 수동 입력 안내
   html += '<div style="margin: 6px 24px 14px; padding: 11px 14px; background: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px; font-size: 12px; color: #78350f; line-height: 1.5;">' +
     '<strong>📌 큐텐 영수증 PDF 안내</strong><br>' +
-    '큐텐(JP-S/Q/C) 영수증은 <strong>이미지 PDF</strong>라 자동 텍스트 추출이 안 됩니다. ' +
-    '업로드 시 자동으로 <strong>"빠른 입력 모달"</strong>이 열리며 영수증의 <strong>번호 / 기간 / 합계</strong> 3개 필드만 30초 안에 입력하면 됩니다 ' +
-    '(파일명에 "Q캐쉬"/"스마트세일즈"/"서비스수수료"가 있으면 자동으로 종류 인식됨).' +
+    '큐텐(JP-S/Q/C) 영수증은 자동 텍스트 추출이 안되는 경우가 있습니다. ' +
+    '이 경우 업로드 시 자동으로 <strong>"빠른 입력 모달"</strong>이 열리며 영수증의 <strong>번호 / 기간 / 합계</strong> 3개 필드를 입력하면 됩니다.' +
     '</div>';
 
   // Shopee 8개국
@@ -10754,7 +10753,7 @@ console.log('v3.32 — 코드 복사 방지 적용 (관리자 제외, deterrent 
 <div id="fb-login-overlay">
   <div class="fb-login-box">
     <h2>📊 플랫폼 수수료 계산기</h2>
-    <div class="sub">관리자가 사전 등록한 이메일로만 로그인 가능합니다.<br>처음이라면 입력한 비밀번호가 자동 등록되며, 이후에는 같은 비밀번호로 로그인합니다.</div>
+    <div class="sub">이메일 + 비밀번호로 로그인하세요.<br>처음이라면 입력한 비밀번호가 자동 등록되며, 이후에는 같은 비밀번호로 로그인합니다.<br>각자 데이터는 본인만 볼 수 있습니다.</div>
     <div id="fb-step-input">
       <label>이메일 주소</label>
       <input type="email" id="fb-email-input" placeholder="example@taxexpert.kr" autocomplete="email">
@@ -10858,31 +10857,7 @@ sendBtn.addEventListener('click', async () => {
   sendBtn.disabled = true;
   sendBtn.textContent = '확인 중...';
   try {
-    // === 화이트리스트 체크 ===
-    let allowed = false;
-    if (email === ADMIN_EMAIL) {
-      allowed = true;
-    } else {
-      const ap = await db.collection('approvedEmails').doc(email).get();
-      if (ap.exists) allowed = true;
-      if (!allowed) {
-        const ms = await db.collection('members').get();
-        ms.forEach(d => {
-          const data = d.data();
-          if (data && data.email && data.email.toLowerCase() === email && data.status === 'approved') {
-            allowed = true;
-          }
-        });
-      }
-    }
-    if (!allowed) {
-      showMsg('등록되지 않은 이메일입니다. 관리자(' + ADMIN_EMAIL + ')에게 등록을 요청해주세요.', 'error');
-      sendBtn.disabled = false;
-      sendBtn.textContent = '로그인';
-      return;
-    }
-
-    // === Firebase 이메일/비밀번호 로그인 ===
+    // === Firebase 이메일/비밀번호 로그인 (화이트리스트 없음 — 누구나 가능) ===
     try {
       // 기존 계정 로그인 시도
       await auth.signInWithEmailAndPassword(email, password);
@@ -10986,39 +10961,19 @@ async function check24HourExpiry(user) {
 setInterval(() => { if (auth.currentUser) check24HourExpiry(auth.currentUser); }, 60 * 60 * 1000);
 
 async function checkTeamMembership(user) {
-  // 익명 사용자: 이메일은 localStorage에서 가져옴
-  if (!user.email) {
-    user = Object.assign({}, user, { email: window.localStorage.getItem('fbUserEmail') || '' });
-  }
-  if (user.email === ADMIN_EMAIL) {
+  // 화이트리스트 비활성화 — 누구든 로그인하면 통과
+  // members 컬렉션에 가입 기록만 남김 (관리자 식별 + 가입일 추적용)
+  const isAdmin = user.email === ADMIN_EMAIL;
+  try {
     await db.collection('members').doc(user.uid).set({
-      email: user.email, status: 'approved', role: 'admin',
-      approvedAt: firebase.firestore.FieldValue.serverTimestamp(), approvedBy: 'system'
-    }, { merge: true });
-    return { approved: true, isAdmin: true };
-  }
-  const ms = await db.collection('members').doc(user.uid).get();
-  if (ms.exists) {
-    const d = ms.data();
-    if (d.status === 'approved') return { approved: true, isAdmin: d.role === 'admin' };
-    if (d.status === 'pending') return { approved: false, status: 'pending' };
-    return { approved: false, status: 'rejected' };
-  }
-  const ap = await db.collection('approvedEmails').doc(user.email.toLowerCase()).get();
-  if (ap.exists) {
-    await db.collection('members').doc(user.uid).set({
-      email: user.email, status: 'approved', role: 'member',
+      email: user.email,
+      status: 'approved',
+      role: isAdmin ? 'admin' : 'member',
       approvedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      approvedBy: ap.data().addedBy || 'admin (사전 등록)',
-      requestedAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    return { approved: true, isAdmin: false };
-  }
-  await db.collection('members').doc(user.uid).set({
-    email: user.email, status: 'pending',
-    requestedAt: firebase.firestore.FieldValue.serverTimestamp()
-  });
-  return { approved: false, status: 'new' };
+      approvedBy: 'auto'
+    }, { merge: true });
+  } catch (e) { console.warn('members 기록 실패 (무시)', e); }
+  return { approved: true, isAdmin };
 }
 
 function showAccessDenied(reason, email) {
