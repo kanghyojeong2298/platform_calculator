@@ -5497,7 +5497,22 @@ function addUser() {
   authSetUsers(users);
   document.getElementById('team-section')?.remove();
   insertTeamSection();
-  toast(email + ' 등록 완료', 'ok');
+  // Firebase Firestore에도 동기화 (Firebase 로그인 화이트리스트에 추가)
+  if (window.fbDb && firebase && firebase.firestore) {
+    window.fbDb.collection('approvedEmails').doc(email).set({
+      email,
+      addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      addedBy: (window.fbCurrentUser && window.fbCurrentUser.email) || 'admin'
+    }).then(() => {
+      console.log('[Firebase 동기화] approvedEmails에 ' + email + ' 추가됨');
+      toast(email + ' 등록 완료 (Firebase 동기화 ✓)', 'ok');
+    }).catch(e => {
+      console.error('Firebase 동기화 실패', e);
+      toast(email + ' 등록됐으나 Firebase 동기화 실패: ' + e.message, 'err');
+    });
+  } else {
+    toast(email + ' 등록 완료', 'ok');
+  }
 }
 
 function removeUser(email) {
@@ -5508,6 +5523,10 @@ function removeUser(email) {
   localStorage.removeItem(userPdKey(email));
   document.getElementById('team-section')?.remove();
   insertTeamSection();
+  // Firebase에서도 제거
+  if (window.fbDb && firebase && firebase.firestore) {
+    window.fbDb.collection('approvedEmails').doc(email).delete().catch(e => console.warn('approvedEmails 삭제 실패', e));
+  }
   toast(email + ' 삭제됨', 'ok');
 }
 
