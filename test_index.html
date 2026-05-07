@@ -5497,14 +5497,9 @@ function addUser() {
   authSetUsers(users);
   document.getElementById('team-section')?.remove();
   insertTeamSection();
-  // Firebase Firestore에도 동기화 (Firebase 로그인 화이트리스트에 추가)
-  if (window.fbDb && firebase && firebase.firestore) {
-    window.fbDb.collection('approvedEmails').doc(email).set({
-      email,
-      addedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      addedBy: (window.fbCurrentUser && window.fbCurrentUser.email) || 'admin'
-    }).then(() => {
-      console.log('[Firebase 동기화] approvedEmails에 ' + email + ' 추가됨');
+  // Firebase 화이트리스트(config/allowedEmails)에 추가
+  if (typeof window.fbAddAllowedEmail === 'function') {
+    window.fbAddAllowedEmail(email).then(() => {
       toast(email + ' 등록 완료 (Firebase 동기화 ✓)', 'ok');
     }).catch(e => {
       console.error('Firebase 동기화 실패', e);
@@ -5523,9 +5518,9 @@ function removeUser(email) {
   localStorage.removeItem(userPdKey(email));
   document.getElementById('team-section')?.remove();
   insertTeamSection();
-  // Firebase에서도 제거
-  if (window.fbDb && firebase && firebase.firestore) {
-    window.fbDb.collection('approvedEmails').doc(email).delete().catch(e => console.warn('approvedEmails 삭제 실패', e));
+  // Firebase 화이트리스트에서도 제거
+  if (typeof window.fbRemoveAllowedEmail === 'function') {
+    window.fbRemoveAllowedEmail(email).catch(e => console.warn('Firebase 제거 실패', e));
   }
   toast(email + ' 삭제됨', 'ok');
 }
@@ -10860,6 +10855,67 @@ auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(e => console.err
 window.fbAuth = auth;
 window.fbDb = db;
 window.fbAdminEmail = ADMIN_EMAIL;
+
+// === 화이트리스트 (작동 검증된 패턴: config/allowedEmails 단일 문서 + 메모리 캐시) ===
+let sharedAllowedEmails = null; // 페이지 로드 시 Firestore에서 로드, 그 후 메모리에서만 사용
+async function loadSharedEmails() {
+  try {
+    const doc = await db.collection('config').doc('allowedEmails').get();
+    if (doc.exists && doc.data().emails && doc.data().emails.length) {
+      sharedAllowedEmails = doc.data().emails;
+      console.log('[Firebase] 공용 허용 이메일 ' + sharedAllowedEmails.length + '개 로드');
+    } else {
+      sharedAllowedEmails = [];
+      console.log('[Firebase] 공용 허용 이메일 비어있음 — 관리자만 로그인 가능');
+    }
+  } catch (e) {
+    console.warn('[Firebase] 공용 이메일 로드 실패 (로그인 시 재시도)', e);
+    sharedAllowedEmails = null;
+  }
+}
+window.loadSharedEmails = loadSharedEmails;
+window.fbIsAllowedEmail = function(email) {
+  if (!email) return false;
+  if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) return true;
+  if (!sharedAllowedEmails) return false; // 미로드 상태면 차단
+  return sharedAllowedEmails.map(e => e.toLowerCase()).indexOf(email.toLowerCase()) >= 0;
+};
+window.fbAddAllowedEmail = async function(email) {
+  email = (email || '').trim().toLowerCase();
+  if (!email) return false;
+  // 현재 목록 다시 로드 (race condition 방지)
+  const doc = await db.collection('config').doc('allowedEmails').get();
+  let emails = (doc.exists && doc.data().emails) || [];
+  if (emails.map(e => e.toLowerCase()).indexOf(email) >= 0) return true; // 이미 있음
+  emails.push(email);
+  await db.collection('config').doc('allowedEmails').set({
+    emails,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedBy: (window.fbCurrentUser && window.fbCurrentUser.email) || 'admin'
+  }, { merge: true });
+  sharedAllowedEmails = emails;
+  console.log('[Firebase] ' + email + ' 허용 추가 완료 (총 ' + emails.length + '명)');
+  return true;
+};
+window.fbRemoveAllowedEmail = async function(email) {
+  email = (email || '').trim().toLowerCase();
+  if (!email) return false;
+  const doc = await db.collection('config').doc('allowedEmails').get();
+  let emails = (doc.exists && doc.data().emails) || [];
+  emails = emails.filter(e => e.toLowerCase() !== email);
+  await db.collection('config').doc('allowedEmails').set({
+    emails,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedBy: (window.fbCurrentUser && window.fbCurrentUser.email) || 'admin'
+  }, { merge: true });
+  sharedAllowedEmails = emails;
+  console.log('[Firebase] ' + email + ' 허용 제거 완료');
+  return true;
+};
+
+// 페이지 로드 시 즉시 한 번 가져옴 (로그인 전에도 가능)
+loadSharedEmails();
+
 console.log('[Firebase] SDK 로드 완료');
 
 const overlay = document.getElementById('fb-login-overlay');
@@ -10899,28 +10955,10 @@ sendBtn.addEventListener('click', async () => {
   sendBtn.disabled = true;
   sendBtn.textContent = '확인 중...';
   try {
-    // === 화이트리스트 체크 (관리자 + approvedEmails + 승인된 members) ===
-    let allowed = false;
-    if (email === ADMIN_EMAIL) {
-      allowed = true;
-    } else {
-      try {
-        const ap = await db.collection('approvedEmails').doc(email).get();
-        if (ap.exists) allowed = true;
-      } catch (e) { console.warn('approvedEmails 조회 실패', e); }
-      if (!allowed) {
-        try {
-          const ms = await db.collection('members').get();
-          ms.forEach(d => {
-            const data = d.data();
-            if (data && data.email && data.email.toLowerCase() === email && data.status === 'approved') {
-              allowed = true;
-            }
-          });
-        } catch (e) { console.warn('members 조회 실패', e); }
-      }
-    }
-    if (!allowed) {
+    // === 화이트리스트 체크 (config/allowedEmails 단일 문서) ===
+    // 캐시가 비어있으면 다시 로드
+    if (sharedAllowedEmails === null) await loadSharedEmails();
+    if (!window.fbIsAllowedEmail(email)) {
       showMsg('등록되지 않은 이메일입니다. 관리자(' + ADMIN_EMAIL + ')에게 등록을 요청해주세요.', 'error');
       sendBtn.disabled = false;
       sendBtn.textContent = '로그인';
@@ -11273,32 +11311,46 @@ window.fbInitDataLayer = async (user, isAdmin) => {
     }
     applyAdminLock();
 
-    // 관리자: 옛 localStorage UI에 등록된 사용자들을 Firestore approvedEmails로 자동 동기화
+    // 관리자: localStorage + 옛 approvedEmails 컬렉션 → config/allowedEmails 단일 문서로 통합
     if (isAdmin) {
       try {
-        if (typeof authGetUsers === 'function') {
-          const localUsers = authGetUsers() || [];
-          let synced = 0;
-          for (const u of localUsers) {
-            if (!u.email) continue;
-            const em = u.email.toLowerCase();
-            const ap = await db.collection('approvedEmails').doc(em).get();
-            if (!ap.exists) {
-              await db.collection('approvedEmails').doc(em).set({
-                email: em,
-                addedAt: firebase.firestore.FieldValue.serverTimestamp(),
-                addedBy: user.email,
-                migratedFromLocal: true
-              });
-              synced++;
-            }
+        const allEmailsSet = new Set();
+        // 1. localStorage에서 가져오기
+        try {
+          const raw = localStorage.getItem('feeCalcAuthUsers_v1');
+          if (raw) {
+            const arr = JSON.parse(raw);
+            arr.forEach(u => { if (u && u.email) allEmailsSet.add(u.email.toLowerCase()); });
           }
-          if (synced > 0) {
-            console.log('[Firebase 마이그레이션] localStorage 사용자 ' + synced + '명을 approvedEmails로 동기화');
-            if (typeof toast === 'function') toast('기존 팀원 ' + synced + '명 Firebase 동기화 완료', 'ok');
-          }
+        } catch (e) {}
+        // 2. 옛 approvedEmails 컬렉션도 마이그레이션
+        try {
+          const oldSnap = await db.collection('approvedEmails').get();
+          oldSnap.forEach(d => allEmailsSet.add(d.id.toLowerCase()));
+        } catch (e) {}
+        // 3. 현재 admin 무조건 포함
+        allEmailsSet.add(user.email.toLowerCase());
+        // 4. 기존 config/allowedEmails와 합집합
+        const cfgDoc = await db.collection('config').doc('allowedEmails').get();
+        const existing = (cfgDoc.exists && cfgDoc.data().emails) || [];
+        existing.forEach(e => allEmailsSet.add(e.toLowerCase()));
+        const finalList = [...allEmailsSet];
+        const existingSorted = JSON.stringify(existing.map(e => e.toLowerCase()).sort());
+        const finalSorted = JSON.stringify([...finalList].sort());
+        if (existingSorted !== finalSorted) {
+          await db.collection('config').doc('allowedEmails').set({
+            emails: finalList,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            updatedBy: user.email
+          }, { merge: true });
+          sharedAllowedEmails = finalList;
+          console.log('[Firebase 마이그레이션] 총 ' + finalList.length + '명 → config/allowedEmails 통합');
+          if (typeof toast === 'function') toast('허용 이메일 ' + finalList.length + '명 동기화', 'ok');
+        } else {
+          sharedAllowedEmails = finalList;
+          console.log('[Firebase] 허용 이메일 이미 동기화 (' + finalList.length + '명)');
         }
-      } catch (e) { console.warn('localStorage 사용자 동기화 실패', e); }
+      } catch (e) { console.warn('이메일 마이그레이션 실패', e); }
     }
 
     const _origRS = window.renderSettings;
