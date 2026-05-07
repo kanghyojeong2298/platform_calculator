@@ -6384,8 +6384,12 @@ console.log('v3.10 — 거래 초기화 핸들러 강제 교체 활성화');
 </style>
 
 <script>
-// ============ v3.11 — 이메일 인증번호 + 디바이스 추적 + 시간대별 보안 ============
-
+// ============ v3.11 비활성화 — Firebase 인증으로 대체됨 ============
+// 아래 코드는 더 이상 사용되지 않음 (Firebase email link login으로 교체)
+if (true) { /* v3.11 disabled */
+  console.log('v3.11 비활성화 — Firebase 인증으로 대체');
+} else {
+// 이전 코드 (참조용)
 const DEVICE_ID_KEY = 'feeCalcDeviceId_v1';
 const SESSION_KEY = 'feeCalcSession_v1';     // { email, deviceId, loginDate, loginTime, deviceLabel }
 const LOGIN_LOG_KEY = 'feeCalcLoginLog_v1';  // [{email, deviceId, time, status, isCrossDevice}]
@@ -6846,6 +6850,7 @@ setTimeout(() => {
 }, 600);
 
 console.log('v3.11 — 이메일 인증번호 + 디바이스 추적 + 시간대별 보안 활성화');
+} // end if-else (v3.11 disabled)
 </script>
 
 
@@ -10939,12 +10944,55 @@ logoutBtn.addEventListener('click', async () => {
 });
 
 // ===== 인증 상태 변경 감지 =====
+// === 24시간 세션 만료 체크 ===
+const SESSION_DURATION_MS = 24 * 60 * 60 * 1000; // 24시간
+async function check24HourExpiry(user) {
+  if (!user) return false;
+  // metadata.lastSignInTime은 ISO string (예: "Tue, 06 May 2025 02:00:00 GMT")
+  const lastSignInTime = user.metadata.lastSignInTime;
+  if (!lastSignInTime) return false;
+  const lastSignInMs = new Date(lastSignInTime).getTime();
+  const ageMs = Date.now() - lastSignInMs;
+  if (ageMs > SESSION_DURATION_MS) {
+    console.log('[Firebase] 24시간 세션 만료 — 자동 로그아웃 (' + Math.round(ageMs/3600000) + '시간 경과)');
+    await signOut(auth);
+    return true; // 만료
+  }
+  // 남은 시간 표시 (예: 18시간 남음)
+  const remainingHours = Math.round((SESSION_DURATION_MS - ageMs) / 3600000);
+  console.log('[Firebase] 세션 유효 — ' + remainingHours + '시간 남음');
+  return false;
+}
+
+// 1시간마다 체크 (페이지가 오래 열려있어도 만료 시 자동 로그아웃)
+setInterval(async () => {
+  if (auth.currentUser) {
+    await check24HourExpiry(auth.currentUser);
+  }
+}, 60 * 60 * 1000);
+
+// 페이지 포커스 시에도 체크 (다른 탭 갔다가 24시간 후 돌아와도)
+window.addEventListener('focus', async () => {
+  if (auth.currentUser) {
+    await check24HourExpiry(auth.currentUser);
+  }
+});
+
 onAuthStateChanged(auth, async (user) => {
   if (user) {
+    // 24시간 세션 만료 체크
+    const expired = await check24HourExpiry(user);
+    if (expired) return; // signOut에 의해 다시 onAuthStateChanged(null)로 호출됨
+
     // 로그인됨
     overlay.classList.add('hidden');
     userBar.style.display = 'flex';
     userEmailEl.textContent = user.email;
+    // 세션 만료까지 남은 시간 표시
+    const lastSignInMs = new Date(user.metadata.lastSignInTime).getTime();
+    const remainHours = Math.max(0, Math.round((SESSION_DURATION_MS - (Date.now() - lastSignInMs)) / 3600000));
+    const syncStatusEl = document.getElementById('fb-sync-status');
+    if (syncStatusEl) syncStatusEl.textContent = '☁ 동기화됨 · 세션 ' + remainHours + 'h 남음';
     const isAdmin = user.email === ADMIN_EMAIL;
     if (isAdmin) {
       userBadge.textContent = '관리자';
