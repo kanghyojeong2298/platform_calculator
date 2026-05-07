@@ -242,6 +242,16 @@
         </div>
 
         <div id="fx-by-year"></div>
+
+      <!-- 팀원 관리 (관리자 전용) -->
+      <div id="fb-team-section" class="section" style="display:none; margin-top:20px;">
+        <h3>👥 팀원 관리 (관리자 전용)</h3>
+        <div class="desc">로그인 시도한 사용자를 승인/거부하거나 권한을 회수할 수 있습니다. 승인되지 않은 사용자는 로그인할 수 없습니다.</div>
+        <div style="margin:10px 0;">
+          <button class="btn btn-sm primary" onclick="fbLoadTeamMembers && fbLoadTeamMembers()">목록 새로고침</button>
+        </div>
+        <div id="fb-team-list" style="margin-top:10px;">로드 중...</div>
+      </div>
       </div>
 
       <div class="section">
@@ -671,6 +681,11 @@ function parseHtmlFxRows(buf) {
 }
 
 function handleFxFile(file, replaceCurrency) {
+  // 환율 변경은 관리자만 가능
+  if (window.fbCurrentUser && !window.fbIsAdmin) {
+    toast('환율 변경은 관리자만 가능합니다', 'err');
+    return;
+  }
   const reader = new FileReader();
   reader.onload = (e) => {
     try {
@@ -824,6 +839,11 @@ function handleFxFile(file, replaceCurrency) {
 }
 
 function deleteCurrencyFromYear(year, currency) {
+  // 환율 삭제는 관리자만 가능
+  if (window.fbCurrentUser && !window.fbIsAdmin) {
+    toast('환율 변경은 관리자만 가능합니다', 'err');
+    return;
+  }
   if (!confirm(year + '년 ' + currency + ' 환율 삭제?')) return;
   // Firebase 환율 변경 이력 기록 (삭제 전 기록)
   if (typeof window.fbLogFxChange === 'function') {
@@ -11006,11 +11026,79 @@ window.addEventListener('focus', async () => {
   }
 });
 
+// === 팀원 승인 체크 ===
+async function checkTeamMembership(user) {
+  // 관리자는 무조건 승인 (자동 등록)
+  if (user.email === ADMIN_EMAIL) {
+    await setDoc(doc(db, 'members', user.uid), {
+      email: user.email,
+      status: 'approved',
+      role: 'admin',
+      approvedAt: serverTimestamp(),
+      approvedBy: 'system'
+    }, { merge: true });
+    return { approved: true, isAdmin: true };
+  }
+
+  const memRef = doc(db, 'members', user.uid);
+  const memSnap = await getDoc(memRef);
+
+  if (!memSnap.exists()) {
+    // 첫 로그인 시도 — pending 상태로 등록
+    await setDoc(memRef, {
+      email: user.email,
+      status: 'pending',
+      requestedAt: serverTimestamp()
+    });
+    return { approved: false, status: 'new' };
+  }
+
+  const data = memSnap.data();
+  if (data.status === 'approved') {
+    return { approved: true, isAdmin: data.role === 'admin' };
+  } else if (data.status === 'pending') {
+    return { approved: false, status: 'pending' };
+  } else {
+    return { approved: false, status: 'rejected' };
+  }
+}
+
+function showAccessDenied(reason, email) {
+  overlay.classList.remove('hidden');
+  let title, msg;
+  if (reason === 'new') {
+    title = '✓ 승인 요청 등록됨';
+    msg = email + ' 계정이 관리자 승인 대기 목록에 추가되었습니다.<br><br>관리자(' + ADMIN_EMAIL + ')의 승인 후 다시 로그인해주세요.';
+  } else if (reason === 'pending') {
+    title = '⏳ 관리자 승인 대기 중';
+    msg = email + ' 계정은 아직 관리자 승인을 받지 못했습니다.<br><br>관리자(' + ADMIN_EMAIL + ')에게 문의해주세요.';
+  } else {
+    title = '✗ 접근 거부됨';
+    msg = email + ' 계정의 접근 권한이 없습니다.<br><br>관리자(' + ADMIN_EMAIL + ')에게 문의해주세요.';
+  }
+  document.querySelector('.fb-login-box h2').textContent = title;
+  document.querySelector('.fb-login-box .sub').innerHTML = msg;
+  showStep('input');
+  emailInput.style.display = 'none';
+  sendBtn.style.display = 'none';
+  msgArea.innerHTML = '<button class="primary" onclick="window.location.reload()">로그인 화면으로 돌아가기</button>';
+}
+
 onAuthStateChanged(auth, async (user) => {
   if (user) {
     // 24시간 세션 만료 체크
     const expired = await check24HourExpiry(user);
     if (expired) return; // signOut에 의해 다시 onAuthStateChanged(null)로 호출됨
+
+    // 팀원 승인 체크
+    const memCheck = await checkTeamMembership(user);
+    if (!memCheck.approved) {
+      const email = user.email;
+      const status = memCheck.status;
+      await signOut(auth);
+      showAccessDenied(status, email);
+      return;
+    }
 
     // 로그인됨
     overlay.classList.add('hidden');
@@ -11146,8 +11234,8 @@ async function saveStateToCloud(user) {
       selectedYear: window.state.selectedYear,
       updatedAt: serverTimestamp()
     }, { merge: true });
-    // 공유 fxData (모든 로그인 사용자가 같은 환율 사용)
-    if (window.state.fxData && Object.keys(window.state.fxData).length) {
+    // 공유 fxData — 관리자만 쓰기 가능
+    if (window.fbIsAdmin && window.state.fxData && Object.keys(window.state.fxData).length) {
       await setDoc(doc(db, 'shared', 'fxData'), {
         fxData: window.state.fxData,
         updatedAt: serverTimestamp(),
@@ -11248,6 +11336,49 @@ window.fbInitDataLayer = async (user, isAdmin) => {
     if (typeof window.renderYearChips === 'function') window.renderYearChips();
 
     document.getElementById('fb-sync-status').textContent = '☁ 동기화됨';
+
+    // 비관리자: 환율 관리 UI 숨기기/잠금
+    if (!isAdmin) {
+      // 환율 업로드 영역 안내 메시지로 교체
+      const upZone = document.getElementById('up-zone');
+      if (upZone) {
+        upZone.style.display = 'none';
+      }
+      // 환율 업로드 영역 위에 안내 추가
+      const fxSection = document.querySelector('.section');
+      if (fxSection) {
+        const banner = document.createElement('div');
+        banner.style.cssText = 'background:#fef3c7; border:1px solid #fbbf24; padding:12px 14px; border-radius:8px; margin:12px 0; font-size:13px; color:#78350f;';
+        banner.innerHTML = '🔒 <strong>환율 관리는 관리자 전용입니다.</strong><br>현재 적용 환율을 조회만 가능하며, 변경/추가는 관리자에게 요청하세요.';
+        const h3 = fxSection.querySelector('h3');
+        if (h3 && h3.parentNode) h3.parentNode.insertBefore(banner, h3.nextSibling);
+      }
+      // 환율 추가 업로드 / 삭제 버튼들 숨기기 (renderSettings 후 갱신)
+      const hideAdminButtons = () => {
+        document.querySelectorAll('button[onclick*="uploadForYear"], button[onclick*="uploadForCurrency"], button[onclick*="deleteCurrencyFromYear"]').forEach(b => {
+          b.style.display = 'none';
+        });
+      };
+      hideAdminButtons();
+      // renderSettings가 다시 호출될 때마다 적용
+      const _origRS = window.renderSettings;
+      window.renderSettings = function() {
+        if (typeof _origRS === 'function') _origRS();
+        setTimeout(hideAdminButtons, 50);
+      };
+    }
+
+    // 관리자면 팀원 관리 섹션 표시 + 자동 로드
+    if (isAdmin) {
+      const sec = document.getElementById('fb-team-section');
+      if (sec) {
+        sec.style.display = 'block';
+        if (typeof window.fbLoadTeamMembers === 'function') {
+          window.fbLoadTeamMembers();
+        }
+      }
+    }
+
     console.log('[Firebase] 데이터 레이어 초기화 완료');
   } catch (e) {
     console.error('[Firebase] 데이터 로드 실패', e);
@@ -11350,6 +11481,126 @@ setInterval(async () => {
     }
   } catch (e) { /* silent */ }
 }, 5 * 60 * 1000);
+
+// === 팀원 관리 (관리자 전용) ===
+window.fbLoadTeamMembers = async function() {
+  const container = document.getElementById('fb-team-list');
+  if (!container) return;
+  if (!window.fbIsAdmin) {
+    container.innerHTML = '<div style="color:#dc2626;">관리자만 접근 가능</div>';
+    return;
+  }
+  container.innerHTML = '<div style="color:#6b7280; padding:12px;">팀원 목록 불러오는 중...</div>';
+  try {
+    const snap = await getDocs(collection(db, 'members'));
+    if (snap.empty) {
+      container.innerHTML = '<div style="color:#6b7280; padding:12px;">등록된 팀원이 없습니다</div>';
+      return;
+    }
+    const members = [];
+    snap.forEach(d => members.push({ id: d.id, ...d.data() }));
+    // 정렬: pending 먼저, approved 그다음
+    members.sort((a, b) => {
+      const order = { pending: 0, approved: 1, rejected: 2 };
+      return (order[a.status] || 9) - (order[b.status] || 9);
+    });
+
+    let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
+    html += '<thead><tr style="background:#f9fafb; border-bottom:1px solid #e5e7eb;">' +
+      '<th style="text-align:left; padding:10px;">이메일</th>' +
+      '<th style="text-align:center; padding:10px;">상태</th>' +
+      '<th style="text-align:center; padding:10px;">요청일</th>' +
+      '<th style="text-align:center; padding:10px;">승인일</th>' +
+      '<th style="text-align:center; padding:10px;">작업</th>' +
+      '</tr></thead><tbody>';
+
+    for (const m of members) {
+      const isAdmin = m.role === 'admin';
+      const statusBadge = m.status === 'approved'
+        ? '<span style="background:#10b981; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">승인됨</span>'
+        : m.status === 'pending'
+        ? '<span style="background:#f59e0b; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">대기 중</span>'
+        : '<span style="background:#dc2626; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">거부</span>';
+      const adminBadge = isAdmin ? ' <span style="background:#dc2626; color:#fff; padding:1px 6px; border-radius:4px; font-size:10px;">관리자</span>' : '';
+      const reqDate = m.requestedAt ? m.requestedAt.toDate().toLocaleDateString('ko-KR') : '-';
+      const apvDate = m.approvedAt ? m.approvedAt.toDate().toLocaleDateString('ko-KR') : '-';
+
+      let actions = '';
+      if (m.status === 'pending') {
+        actions += '<button class="btn btn-sm primary" onclick="fbApproveTeam(\'' + m.id + '\')" style="margin-right:4px;">승인</button>';
+        actions += '<button class="btn btn-sm danger" onclick="fbRejectTeam(\'' + m.id + '\')">거부</button>';
+      } else if (m.status === 'approved' && !isAdmin) {
+        actions += '<button class="btn btn-sm danger" onclick="fbRevokeTeam(\'' + m.id + '\')">권한 회수</button>';
+      }
+
+      html += '<tr style="border-bottom:1px solid #f3f4f6;">' +
+        '<td style="padding:10px;">' + m.email + adminBadge + '</td>' +
+        '<td style="padding:10px; text-align:center;">' + statusBadge + '</td>' +
+        '<td style="padding:10px; text-align:center; color:#6b7280; font-size:12px;">' + reqDate + '</td>' +
+        '<td style="padding:10px; text-align:center; color:#6b7280; font-size:12px;">' + apvDate + '</td>' +
+        '<td style="padding:10px; text-align:center;">' + (actions || '-') + '</td>' +
+      '</tr>';
+    }
+    html += '</tbody></table>';
+
+    const pendingCount = members.filter(m => m.status === 'pending').length;
+    const summary = '<div style="padding:8px 0; font-size:12px; color:#4b5563;">' +
+      '총 ' + members.length + '명 · 승인 대기 <strong style="color:#f59e0b;">' + pendingCount + '명</strong></div>';
+
+    container.innerHTML = summary + html;
+  } catch (e) {
+    container.innerHTML = '<div style="color:#dc2626; padding:12px;">로드 실패: ' + e.message + '</div>';
+    console.error(e);
+  }
+};
+
+window.fbApproveTeam = async function(uid) {
+  if (!window.fbIsAdmin) return alert('관리자만 가능');
+  if (!confirm('이 팀원의 접근을 승인하시겠습니까?')) return;
+  try {
+    await setDoc(doc(db, 'members', uid), {
+      status: 'approved',
+      approvedAt: serverTimestamp(),
+      approvedBy: window.fbCurrentUser.email
+    }, { merge: true });
+    if (typeof toast === 'function') toast('승인 완료', 'ok');
+    window.fbLoadTeamMembers();
+  } catch (e) {
+    alert('승인 실패: ' + e.message);
+  }
+};
+
+window.fbRejectTeam = async function(uid) {
+  if (!window.fbIsAdmin) return alert('관리자만 가능');
+  if (!confirm('이 팀원의 요청을 거부하시겠습니까?')) return;
+  try {
+    await setDoc(doc(db, 'members', uid), {
+      status: 'rejected',
+      rejectedAt: serverTimestamp(),
+      rejectedBy: window.fbCurrentUser.email
+    }, { merge: true });
+    if (typeof toast === 'function') toast('거부 완료', 'ok');
+    window.fbLoadTeamMembers();
+  } catch (e) {
+    alert('거부 실패: ' + e.message);
+  }
+};
+
+window.fbRevokeTeam = async function(uid) {
+  if (!window.fbIsAdmin) return alert('관리자만 가능');
+  if (!confirm('이 팀원의 권한을 회수하시겠습니까? 즉시 로그아웃됩니다.')) return;
+  try {
+    await setDoc(doc(db, 'members', uid), {
+      status: 'revoked',
+      revokedAt: serverTimestamp(),
+      revokedBy: window.fbCurrentUser.email
+    }, { merge: true });
+    if (typeof toast === 'function') toast('권한 회수 완료', 'ok');
+    window.fbLoadTeamMembers();
+  } catch (e) {
+    alert('회수 실패: ' + e.message);
+  }
+};
 
 console.log('Firebase 인증 시스템 초기화 완료');
 </script>
