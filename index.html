@@ -968,10 +968,17 @@ function renderPlatformGroups() {
   let html = '';
 
   // Qoo10
-  html += '<div class="group-h">큐텐 (일본) <span class="group-h-sub">월별 영수증 PDF + 송금엑셀</span></div>';
+  html += '<div class="group-h">큐텐 (일본) <span class="group-h-sub">월별 영수증 PDF (이미지) · 송금 엑셀</span></div>';
   html += '<div class="card-grid">';
   html += buildCard(PLATFORMS.find(p => p.id === 'qoo10'));
   html += '</div>';
+  // 큐텐 PDF 안내 배너 — OCR 한계 + 수동 입력 안내
+  html += '<div style="margin: 6px 24px 14px; padding: 11px 14px; background: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px; font-size: 12px; color: #78350f; line-height: 1.5;">' +
+    '<strong>📌 큐텐 영수증 PDF 안내</strong><br>' +
+    '큐텐(JP-S/Q/C) 영수증은 <strong>이미지 PDF</strong>라 자동 텍스트 추출이 안 됩니다. ' +
+    '업로드 시 자동으로 <strong>"빠른 입력 모달"</strong>이 열리며 영수증의 <strong>번호 / 기간 / 합계</strong> 3개 필드만 30초 안에 입력하면 됩니다 ' +
+    '(파일명에 "Q캐쉬"/"스마트세일즈"/"서비스수수료"가 있으면 자동으로 종류 인식됨).' +
+    '</div>';
 
   // Shopee 8개국
   const shopeePlatforms = PLATFORMS.filter(p => p.group === 'shopee');
@@ -10609,7 +10616,7 @@ console.log('v3.32 — 코드 복사 방지 적용 (관리자 제외, deterrent 
 <div id="qoo-quick-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000; align-items:center; justify-content:center;">
   <div style="background:#fff; border-radius:12px; padding:24px 28px; max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
     <h3 style="font-size:17px; font-weight:700; margin-bottom:6px;">큐텐 영수증 빠른 입력</h3>
-    <p style="font-size:12px; color:#6b7280; margin-bottom:16px;">PDF에서 자동 추출이 안 되면 영수증의 3가지 정보만 입력해주세요.</p>
+    <p style="font-size:12px; color:#6b7280; margin-bottom:16px;">큐텐 영수증은 이미지 PDF라 자동 추출이 불가합니다.<br>영수증을 보면서 아래 3가지 정보만 입력해주세요.</p>
     <div id="qoo-quick-filename" style="font-size:11px; color:#4f46e5; background:#eef2ff; padding:6px 10px; border-radius:6px; margin-bottom:14px; word-break:break-all;"></div>
 
     <div style="margin-bottom:14px;">
@@ -10747,11 +10754,17 @@ console.log('v3.32 — 코드 복사 방지 적용 (관리자 제외, deterrent 
 <div id="fb-login-overlay">
   <div class="fb-login-box">
     <h2>📊 플랫폼 수수료 계산기</h2>
-    <div class="sub">관리자가 사전 등록한 이메일로만 로그인 가능합니다. 본인 이메일을 입력하세요.</div>
+    <div class="sub">관리자가 사전 등록한 이메일로만 로그인 가능합니다.<br>처음이라면 입력한 비밀번호가 자동 등록되며, 이후에는 같은 비밀번호로 로그인합니다.</div>
     <div id="fb-step-input">
       <label>이메일 주소</label>
       <input type="email" id="fb-email-input" placeholder="example@taxexpert.kr" autocomplete="email">
-      <button class="primary" id="fb-send-link-btn">로그인 링크 받기</button>
+      <label style="margin-top:12px;">비밀번호 (6자 이상)</label>
+      <input type="password" id="fb-password-input" placeholder="비밀번호" autocomplete="current-password">
+      <div style="font-size:11px; color:#9ca3af; margin-top:4px;">처음 로그인이라면 입력한 비밀번호가 자동으로 등록됩니다.</div>
+      <button class="primary" id="fb-send-link-btn">로그인</button>
+      <div style="margin-top:10px; text-align:center; font-size:12px;">
+        <a href="#" onclick="event.preventDefault(); fbResetPassword();" style="color:#6b7280;">비밀번호 잊으셨나요?</a>
+      </div>
     </div>
     <div id="fb-step-sent" style="display:none;">
       <div class="msg success">✓ <strong id="fb-sent-email"></strong> 으로 로그인 링크를 발송했습니다.<br><br>메일함을 확인하시고 <strong>"로그인하기"</strong> 링크를 클릭해주세요.</div>
@@ -10834,20 +10847,33 @@ function showMsg(text, kind) {
   msgArea.innerHTML = '<div class="msg ' + (kind || 'info') + '">' + text + '</div>';
 }
 
+const passwordInput = document.getElementById('fb-password-input');
+
 sendBtn.textContent = '로그인';
 sendBtn.addEventListener('click', async () => {
   const email = (emailInput.value || '').trim().toLowerCase();
+  const password = passwordInput.value || '';
   if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) { showMsg('올바른 이메일을 입력해주세요', 'error'); return; }
+  if (password.length < 6) { showMsg('비밀번호는 6자 이상이어야 합니다', 'error'); return; }
   sendBtn.disabled = true;
   sendBtn.textContent = '확인 중...';
   try {
-    // 화이트리스트 체크 (관리자 또는 사전 등록된 이메일만 통과)
+    // === 화이트리스트 체크 ===
     let allowed = false;
     if (email === ADMIN_EMAIL) {
       allowed = true;
     } else {
       const ap = await db.collection('approvedEmails').doc(email).get();
       if (ap.exists) allowed = true;
+      if (!allowed) {
+        const ms = await db.collection('members').get();
+        ms.forEach(d => {
+          const data = d.data();
+          if (data && data.email && data.email.toLowerCase() === email && data.status === 'approved') {
+            allowed = true;
+          }
+        });
+      }
     }
     if (!allowed) {
       showMsg('등록되지 않은 이메일입니다. 관리자(' + ADMIN_EMAIL + ')에게 등록을 요청해주세요.', 'error');
@@ -10855,19 +10881,50 @@ sendBtn.addEventListener('click', async () => {
       sendBtn.textContent = '로그인';
       return;
     }
-    // 익명 인증으로 Firestore 접근 권한 획득
-    const cred = await auth.signInAnonymously();
-    // 이메일을 localStorage에 저장 (세션 식별용)
-    window.localStorage.setItem('fbUserEmail', email);
+
+    // === Firebase 이메일/비밀번호 로그인 ===
+    try {
+      // 기존 계정 로그인 시도
+      await auth.signInWithEmailAndPassword(email, password);
+    } catch (e) {
+      if (e.code === 'auth/user-not-found' || e.code === 'auth/invalid-credential') {
+        // 신규 가입 시도 — 비밀번호 등록되어 있는지 한번 더 확인 (auth/invalid-credential은 비번 틀린 경우도 포함)
+        if (e.code === 'auth/invalid-credential') {
+          // 계정은 있지만 비번 다름 → 비밀번호 오류로 처리
+          // 다만 신규 가입 시에도 invalid-credential이 올 수 있어 createUserWithEmailAndPassword 시도
+          try {
+            await auth.createUserWithEmailAndPassword(email, password);
+            console.log('[Firebase] 신규 가입 — 비밀번호 등록');
+          } catch (e2) {
+            if (e2.code === 'auth/email-already-in-use') {
+              showMsg('비밀번호가 일치하지 않습니다', 'error');
+            } else {
+              showMsg('가입 실패: ' + e2.message, 'error');
+            }
+            sendBtn.disabled = false;
+            sendBtn.textContent = '로그인';
+            return;
+          }
+        } else {
+          // user-not-found → 신규 가입
+          await auth.createUserWithEmailAndPassword(email, password);
+          console.log('[Firebase] 신규 가입 — 비밀번호 등록');
+        }
+      } else if (e.code === 'auth/wrong-password') {
+        showMsg('비밀번호가 일치하지 않습니다', 'error');
+        sendBtn.disabled = false;
+        sendBtn.textContent = '로그인';
+        return;
+      } else {
+        showMsg('로그인 실패: ' + e.message, 'error');
+        sendBtn.disabled = false;
+        sendBtn.textContent = '로그인';
+        return;
+      }
+    }
+
+    // 로그인 성공 — onAuthStateChanged가 처리
     window.localStorage.setItem('fbLoginTime', Date.now().toString());
-    // 사용자 문서 생성/업데이트 (UID는 익명, 식별은 이메일)
-    await db.collection('users').doc(emailToDocId(email)).set({
-      email,
-      lastLogin: firebase.firestore.FieldValue.serverTimestamp(),
-      anonUid: cred.user.uid
-    }, { merge: true });
-    // 페이지 다시 로드해서 onAuthStateChanged 흐름으로
-    window.location.reload();
   } catch (e) {
     console.error(e);
     showMsg('로그인 실패: ' + e.message, 'error');
@@ -10876,11 +10933,24 @@ sendBtn.addEventListener('click', async () => {
   }
 });
 
+emailInput.addEventListener('keydown', e => { if (e.key === 'Enter') passwordInput.focus(); });
+passwordInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendBtn.click(); });
+
 function emailToDocId(email) {
-  // Firestore 문서 ID로 사용 가능한 형식으로 변환
   return (email || '').toLowerCase().replace(/[^a-z0-9]/g, '_');
 }
 window.emailToDocId = emailToDocId;
+
+// === 비밀번호 재설정 (잊어버린 경우) ===
+window.fbResetPassword = async function() {
+  const email = (emailInput.value || '').trim().toLowerCase();
+  if (!email) { alert('이메일을 먼저 입력해주세요'); return; }
+  if (!confirm(email + ' 로 비밀번호 재설정 메일을 발송하시겠습니까?')) return;
+  try {
+    await auth.sendPasswordResetEmail(email);
+    alert('비밀번호 재설정 메일을 발송했습니다. 메일함을 확인하세요.');
+  } catch (e) { alert('발송 실패: ' + e.message); }
+};
 
 resendBtn.addEventListener('click', () => {
   showStep('input'); emailInput.value = ''; sendBtn.disabled = false; sendBtn.textContent = '로그인 링크 받기'; msgArea.innerHTML = '';
@@ -10967,10 +11037,20 @@ function showAccessDenied(reason, email) {
 
 auth.onAuthStateChanged(async (user) => {
   if (user) {
-    // 익명 사용자: localStorage에서 이메일 복원
+    // 익명 사용자: localStorage에서 이메일 복원 (호환성 유지용)
     if (!user.email && window.localStorage.getItem('fbUserEmail')) {
       user = Object.assign(Object.create(Object.getPrototypeOf(user)), user, { email: window.localStorage.getItem('fbUserEmail') });
     }
+    // Firebase의 lastSignInTime이 저장된 fbLoginTime보다 새로우면 갱신 (= 방금 로그인한 경우)
+    try {
+      const lastMs = new Date(user.metadata.lastSignInTime).getTime();
+      const storedMs = parseInt(window.localStorage.getItem('fbLoginTime') || '0', 10);
+      if (lastMs > storedMs) {
+        window.localStorage.setItem('fbLoginTime', lastMs.toString());
+        console.log('[Firebase] 새 로그인 감지 — 24시간 타이머 시작');
+      }
+      if (user.email) window.localStorage.setItem('fbUserEmail', user.email);
+    } catch(e) {}
     if (await check24HourExpiry(user)) return;
     const mc = await checkTeamMembership(user);
     if (!mc.approved) { const e = user.email; const s = mc.status; await auth.signOut(); showAccessDenied(s, e); return; }
