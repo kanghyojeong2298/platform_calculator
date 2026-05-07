@@ -222,7 +222,7 @@
     <div class="settings-wrap">
 
       <div class="section">
-        <h3>① 월별 평균환율 업로드 <button class="btn btn-sm" type="button" onclick="if(typeof fbShowFxHistory==='function') fbShowFxHistory(); else alert('Firebase 로그인 후 사용 가능');" style="float:right; font-size:11px;">📊 변경 이력</button></h3>
+        <h3>① 월별 평균환율 업로드 <button class="btn btn-sm" type="button" onclick="if(typeof fbShowFxHistory==='function') fbShowFxHistory()" style="float:right; font-size:11px;">📊 변경 이력</button></h3>
         <div class="desc">외국환중개(smbs.or.kr) 매매기준율 / 재정환율을 월별로 등록합니다. 통화별로 따로 업로드 가능합니다.</div>
         <label class="upload-zone" id="up-zone">
           <div class="up-icon">↑</div>
@@ -242,16 +242,6 @@
         </div>
 
         <div id="fx-by-year"></div>
-
-      <!-- 팀원 관리 (관리자 전용) -->
-      <div id="fb-team-section" class="section" style="display:none; margin-top:20px;">
-        <h3>👥 팀원 관리 (관리자 전용)</h3>
-        <div class="desc">로그인 시도한 사용자를 승인/거부하거나 권한을 회수할 수 있습니다. 승인되지 않은 사용자는 로그인할 수 없습니다.</div>
-        <div style="margin:10px 0;">
-          <button class="btn btn-sm primary" onclick="fbLoadTeamMembers && fbLoadTeamMembers()">목록 새로고침</button>
-        </div>
-        <div id="fb-team-list" style="margin-top:10px;">로드 중...</div>
-      </div>
       </div>
 
       <div class="section">
@@ -519,6 +509,8 @@ let state = {
   detailPlatformId: null,
   period: { from: '', to: '' }
 };
+// Firebase 코드가 접근할 수 있도록 window에도 노출
+window.state = state;
 
 // ============ STORAGE ============
 function loadState() {
@@ -681,11 +673,7 @@ function parseHtmlFxRows(buf) {
 }
 
 function handleFxFile(file, replaceCurrency) {
-  // 환율 변경은 관리자만 가능
-  if (window.fbCurrentUser && !window.fbIsAdmin) {
-    toast('환율 변경은 관리자만 가능합니다', 'err');
-    return;
-  }
+  if (window.fbCurrentUser && !window.fbIsAdmin) { toast('환율 변경은 관리자만 가능', 'err'); return; }
   const reader = new FileReader();
   reader.onload = (e) => {
     try {
@@ -818,14 +806,7 @@ function handleFxFile(file, replaceCurrency) {
         state.fxData[year].sources[cur] = { filename: file.name, uploaded: today, dailyCount: totalDays, monthCount };
       }
       saveState();
-      // Firebase 환율 변경 이력 기록
-      if (typeof window.fbLogFxChange === 'function') {
-        window.fbLogFxChange('upload', {
-          year,
-          currencies: curList,
-          note: file.name + ' (' + curList.length + '개 통화 등록)'
-        });
-      }
+      if (typeof window.fbLogFxChange === 'function') window.fbLogFxChange('upload', { year, currencies: curList, note: file.name });
       toast(year + '년 ' + curList.join(',') + ' (' + curList.map(c => CURRENCY_INFO[c]?.country).filter(Boolean).join('/') + ') 환율 등록 완료', 'ok');
       renderSettings();
       renderYearChips();
@@ -839,16 +820,9 @@ function handleFxFile(file, replaceCurrency) {
 }
 
 function deleteCurrencyFromYear(year, currency) {
-  // 환율 삭제는 관리자만 가능
-  if (window.fbCurrentUser && !window.fbIsAdmin) {
-    toast('환율 변경은 관리자만 가능합니다', 'err');
-    return;
-  }
+  if (window.fbCurrentUser && !window.fbIsAdmin) { toast('환율 삭제는 관리자만 가능', 'err'); return; }
   if (!confirm(year + '년 ' + currency + ' 환율 삭제?')) return;
-  // Firebase 환율 변경 이력 기록 (삭제 전 기록)
-  if (typeof window.fbLogFxChange === 'function') {
-    window.fbLogFxChange('delete', { year, currencies: [currency], note: currency + ' 환율 삭제' });
-  }
+  if (typeof window.fbLogFxChange === 'function') window.fbLogFxChange('delete', { year, currencies: [currency] });
   const yd = state.fxData[year];
   if (!yd) return;
   if (yd.rates && yd.rates[currency]) delete yd.rates[currency];
@@ -6417,11 +6391,9 @@ console.log('v3.10 — 거래 초기화 핸들러 강제 교체 활성화');
 
 <script>
 // ============ v3.11 비활성화 — Firebase 인증으로 대체됨 ============
-// 아래 코드는 더 이상 사용되지 않음 (Firebase email link login으로 교체)
-if (true) { /* v3.11 disabled */
+if (true) {
   console.log('v3.11 비활성화 — Firebase 인증으로 대체');
 } else {
-// 이전 코드 (참조용)
 const DEVICE_ID_KEY = 'feeCalcDeviceId_v1';
 const SESSION_KEY = 'feeCalcSession_v1';     // { email, deviceId, loginDate, loginTime, deviceLabel }
 const LOGIN_LOG_KEY = 'feeCalcLoginLog_v1';  // [{email, deviceId, time, status, isCrossDevice}]
@@ -6882,7 +6854,7 @@ setTimeout(() => {
 }, 600);
 
 console.log('v3.11 — 이메일 인증번호 + 디바이스 추적 + 시간대별 보안 활성화');
-} // end if-else (v3.11 disabled)
+} // end v3.11 disabled
 </script>
 
 
@@ -10740,7 +10712,7 @@ console.log('v3.32 — 코드 복사 방지 적용 (관리자 제외, deterrent 
 
 
 
-<!-- ============ Firebase 통합 (인증 + Firestore + IP 추적) ============ -->
+<!-- ============ Firebase 통합 (Compat SDK — file:// 호환) ============ -->
 <style>
   #fb-login-overlay {
     position: fixed; inset: 0; z-index: 99999;
@@ -10757,110 +10729,66 @@ console.log('v3.32 — 코드 복사 방지 적용 (관리자 제외, deterrent 
   .fb-login-box label { font-size: 12px; font-weight: 600; color: #374151; display: block; margin-bottom: 6px; }
   .fb-login-box input { width: 100%; padding: 11px 14px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
   .fb-login-box input:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
-  .fb-login-box button.primary {
-    width: 100%; padding: 12px; margin-top: 16px;
-    background: #4f46e5; color: #fff; border: none; border-radius: 8px;
-    font-size: 14px; font-weight: 700; cursor: pointer;
-  }
+  .fb-login-box button.primary { width: 100%; padding: 12px; margin-top: 16px; background: #4f46e5; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; }
   .fb-login-box button.primary:hover { background: #4338ca; }
   .fb-login-box button.primary:disabled { background: #9ca3af; cursor: not-allowed; }
   .fb-login-box .msg { margin-top: 14px; padding: 11px 13px; border-radius: 8px; font-size: 13px; line-height: 1.5; }
   .fb-login-box .msg.info { background: #dbeafe; color: #1e40af; }
   .fb-login-box .msg.success { background: #d1fae5; color: #065f46; }
   .fb-login-box .msg.error { background: #fee2e2; color: #991b1b; }
-  .fb-user-bar {
-    background: #f3f4f6; border-bottom: 1px solid #e5e7eb;
-    padding: 8px 24px; display: flex; justify-content: space-between; align-items: center;
-    font-size: 12px; color: #4b5563;
-  }
-  .fb-user-bar .user-info { display: flex; align-items: center; gap: 8px; }
+  .fb-user-bar { background: #f3f4f6; border-bottom: 1px solid #e5e7eb; padding: 8px 24px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #4b5563; }
   .fb-user-bar .badge { background: #4f46e5; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
   .fb-user-bar .badge.admin { background: #dc2626; }
-  .fb-user-bar button {
-    background: none; border: 1px solid #d1d5db; padding: 4px 10px;
-    border-radius: 6px; font-size: 11px; cursor: pointer; color: #4b5563;
-  }
-  .fb-user-bar button:hover { background: #fff; }
-  .fb-admin-alert {
-    background: #fef3c7; border-bottom: 2px solid #f59e0b;
-    padding: 10px 24px; font-size: 13px; color: #78350f;
-    display: flex; justify-content: space-between; align-items: center;
-  }
+  .fb-user-bar button { background: none; border: 1px solid #d1d5db; padding: 4px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; color: #4b5563; }
+  .fb-admin-alert { background: #fef3c7; border-bottom: 2px solid #f59e0b; padding: 10px 24px; font-size: 13px; color: #78350f; display: flex; justify-content: space-between; align-items: center; }
   .fb-admin-alert.hidden { display: none; }
 </style>
 
-<!-- 로그인 오버레이 -->
 <div id="fb-login-overlay">
   <div class="fb-login-box">
     <h2>📊 플랫폼 수수료 계산기</h2>
-    <div class="sub">로그인하려면 회사 이메일을 입력하세요. 메일로 받은 링크를 클릭하면 자동으로 로그인됩니다.</div>
-
+    <div class="sub">관리자가 사전 등록한 이메일로만 로그인 가능합니다. 본인 이메일을 입력하세요.</div>
     <div id="fb-step-input">
       <label>이메일 주소</label>
       <input type="email" id="fb-email-input" placeholder="example@taxexpert.kr" autocomplete="email">
       <button class="primary" id="fb-send-link-btn">로그인 링크 받기</button>
     </div>
-
     <div id="fb-step-sent" style="display:none;">
-      <div class="msg success">
-        ✓ <strong id="fb-sent-email"></strong> 으로 로그인 링크를 발송했습니다.<br><br>
-        메일함을 확인하시고 <strong>"로그인하기"</strong> 링크를 클릭해주세요. (스팸함도 확인)
-      </div>
+      <div class="msg success">✓ <strong id="fb-sent-email"></strong> 으로 로그인 링크를 발송했습니다.<br><br>메일함을 확인하시고 <strong>"로그인하기"</strong> 링크를 클릭해주세요.</div>
       <button class="primary" id="fb-resend-btn" style="background:#6b7280;">다른 이메일로 다시 시도</button>
     </div>
-
-    <div id="fb-step-loading" style="display:none;">
-      <div class="msg info">로그인 처리 중...</div>
-    </div>
-
+    <div id="fb-step-loading" style="display:none;"><div class="msg info">로그인 처리 중...</div></div>
     <div id="fb-msg-area"></div>
   </div>
 </div>
 
-<!-- 사용자 바 (로그인 후 표시) -->
 <div class="fb-user-bar" id="fb-user-bar" style="display:none;">
-  <div class="user-info">
-    <span>👤 <strong id="fb-user-email"></strong></span>
-    <span class="badge" id="fb-user-badge">사용자</span>
-    <span style="color:#9ca3af;">·</span>
-    <span id="fb-sync-status" style="color:#10b981;">☁ 동기화됨</span>
-  </div>
-  <div>
-    <button id="fb-logout-btn">로그아웃</button>
-  </div>
+  <div><span>👤 <strong id="fb-user-email"></strong></span> <span class="badge" id="fb-user-badge">사용자</span> <span style="color:#9ca3af;">·</span> <span id="fb-sync-status" style="color:#10b981;">☁ 동기화됨</span></div>
+  <div><button id="fb-logout-btn">로그아웃</button></div>
 </div>
 
-<!-- 환율 변경 이력 모달 -->
 <div id="fb-fx-history-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000; align-items:center; justify-content:center;">
-  <div style="background:#fff; border-radius:12px; max-width:600px; width:90%; max-height:80vh; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
-    <div style="padding:18px 22px; border-bottom:1px solid #e5e7eb; display:flex; justify-content:space-between; align-items:center;">
+  <div style="background:#fff; border-radius:12px; max-width:600px; width:90%; max-height:80vh; display:flex; flex-direction:column;">
+    <div style="padding:18px 22px; border-bottom:1px solid #e5e7eb; display:flex; justify-content:space-between;">
       <h3 style="font-size:16px; font-weight:700;">📊 환율 변경 이력 (최근 50건)</h3>
-      <button onclick="document.getElementById('fb-fx-history-modal').style.display='none';" style="background:none; border:none; font-size:18px; cursor:pointer; color:#6b7280;">✕</button>
+      <button onclick="document.getElementById('fb-fx-history-modal').style.display='none';" style="background:none; border:none; font-size:18px; cursor:pointer;">✕</button>
     </div>
-    <div id="fb-fx-history-list" style="overflow-y:auto; flex:1;">
-      <div style="padding:20px; color:#6b7280; text-align:center;">이력 불러오는 중...</div>
-    </div>
-    <div style="padding:12px 22px; border-top:1px solid #e5e7eb; font-size:11px; color:#9ca3af;">
-      💡 환율 등록/삭제 작업은 모두 자동 기록됩니다 (누가, 언제, 무엇을)
-    </div>
+    <div id="fb-fx-history-list" style="overflow-y:auto; flex:1;"></div>
   </div>
 </div>
 
-<!-- 관리자 경고 배너 -->
 <div class="fb-admin-alert hidden" id="fb-admin-alert">
   <div>⚠️ <strong id="fb-alert-text"></strong></div>
   <button id="fb-alert-close" style="background:none; border:none; cursor:pointer; font-size:16px;">✕</button>
 </div>
 
-<!-- Firebase Compat SDK (file:// 환경에서도 동작) -->
+<!-- Firebase Compat SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 
 <script>
 console.log('[Firebase] 초기화 시작...');
-
-// ===== Firebase 설정 =====
 const firebaseConfig = {
   apiKey: "AIzaSyAOW6OlIdNS1XAvsVY2JoGTO8czFC7vywo",
   authDomain: "platform-calculator.firebaseapp.com",
@@ -10874,18 +10802,12 @@ const ADMIN_EMAIL = 'm1018@taxexpert.kr';
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
-
-// 24시간 영속성
-auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(e => {
-  console.error('[Firebase] setPersistence 실패', e);
-});
-
+auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(e => console.error('[Firebase] setPersistence', e));
 window.fbAuth = auth;
 window.fbDb = db;
 window.fbAdminEmail = ADMIN_EMAIL;
 console.log('[Firebase] SDK 로드 완료');
 
-// ===== UI 헬퍼 =====
 const overlay = document.getElementById('fb-login-overlay');
 const stepInput = document.getElementById('fb-step-input');
 const stepSent = document.getElementById('fb-step-sent');
@@ -10912,131 +10834,118 @@ function showMsg(text, kind) {
   msgArea.innerHTML = '<div class="msg ' + (kind || 'info') + '">' + text + '</div>';
 }
 
-// ===== 로그인 링크 발송 =====
+sendBtn.textContent = '로그인';
 sendBtn.addEventListener('click', async () => {
   const email = (emailInput.value || '').trim().toLowerCase();
-  if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) {
-    showMsg('올바른 이메일 주소를 입력해주세요', 'error');
-    return;
-  }
+  if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) { showMsg('올바른 이메일을 입력해주세요', 'error'); return; }
   sendBtn.disabled = true;
-  sendBtn.textContent = '발송 중...';
+  sendBtn.textContent = '확인 중...';
   try {
-    const actionCodeSettings = {
-      url: window.location.href.split('#')[0].split('?')[0],
-      handleCodeInApp: true
-    };
-    await auth.sendSignInLinkToEmail(email, actionCodeSettings);
-    window.localStorage.setItem('emailForSignIn', email);
-    sentEmailEl.textContent = email;
-    showStep('sent');
-    msgArea.innerHTML = '';
+    // 화이트리스트 체크 (관리자 또는 사전 등록된 이메일만 통과)
+    let allowed = false;
+    if (email === ADMIN_EMAIL) {
+      allowed = true;
+    } else {
+      const ap = await db.collection('approvedEmails').doc(email).get();
+      if (ap.exists) allowed = true;
+    }
+    if (!allowed) {
+      showMsg('등록되지 않은 이메일입니다. 관리자(' + ADMIN_EMAIL + ')에게 등록을 요청해주세요.', 'error');
+      sendBtn.disabled = false;
+      sendBtn.textContent = '로그인';
+      return;
+    }
+    // 익명 인증으로 Firestore 접근 권한 획득
+    const cred = await auth.signInAnonymously();
+    // 이메일을 localStorage에 저장 (세션 식별용)
+    window.localStorage.setItem('fbUserEmail', email);
+    window.localStorage.setItem('fbLoginTime', Date.now().toString());
+    // 사용자 문서 생성/업데이트 (UID는 익명, 식별은 이메일)
+    await db.collection('users').doc(emailToDocId(email)).set({
+      email,
+      lastLogin: firebase.firestore.FieldValue.serverTimestamp(),
+      anonUid: cred.user.uid
+    }, { merge: true });
+    // 페이지 다시 로드해서 onAuthStateChanged 흐름으로
+    window.location.reload();
   } catch (e) {
-    showMsg('링크 발송 실패: ' + e.message, 'error');
     console.error(e);
+    showMsg('로그인 실패: ' + e.message, 'error');
     sendBtn.disabled = false;
-    sendBtn.textContent = '로그인 링크 받기';
+    sendBtn.textContent = '로그인';
   }
 });
+
+function emailToDocId(email) {
+  // Firestore 문서 ID로 사용 가능한 형식으로 변환
+  return (email || '').toLowerCase().replace(/[^a-z0-9]/g, '_');
+}
+window.emailToDocId = emailToDocId;
 
 resendBtn.addEventListener('click', () => {
-  showStep('input');
-  emailInput.value = '';
-  sendBtn.disabled = false;
-  sendBtn.textContent = '로그인 링크 받기';
-  msgArea.innerHTML = '';
+  showStep('input'); emailInput.value = ''; sendBtn.disabled = false; sendBtn.textContent = '로그인 링크 받기'; msgArea.innerHTML = '';
 });
+emailInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendBtn.click(); });
 
-emailInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') sendBtn.click();
-});
-
-// ===== 페이지 로드 시 — 링크 클릭으로 들어왔는지 확인 =====
 async function handleEmailLinkSignIn() {
-  if (!auth.isSignInWithEmailLink(window.location.href)) return false;
-  showStep('loading');
-  let email = window.localStorage.getItem('emailForSignIn');
-  if (!email) {
-    email = window.prompt('확인을 위해 로그인 시도한 이메일 주소를 다시 입력해주세요');
-    if (!email) {
-      showMsg('이메일 확인 취소됨', 'error');
-      showStep('input');
-      return false;
-    }
-  }
-  try {
-    await auth.signInWithEmailLink(email, window.location.href);
-    window.localStorage.removeItem('emailForSignIn');
-    window.history.replaceState({}, document.title, window.location.pathname);
-    return true;
-  } catch (e) {
-    showMsg('로그인 실패: ' + e.message + ' (링크 만료 또는 다른 디바이스)', 'error');
-    showStep('input');
-    return false;
-  }
+  // 이메일 링크 방식 비활성화 — 항상 false 반환 (입력 화면 표시)
+  return false;
 }
 
-// ===== 로그아웃 =====
 logoutBtn.addEventListener('click', async () => {
-  if (!confirm('로그아웃 하시겠습니까?')) return;
+  if (!confirm('로그아웃?')) return;
+  window.localStorage.removeItem('fbUserEmail');
+  window.localStorage.removeItem('fbLoginTime');
   await auth.signOut();
   window.location.reload();
 });
 
-// ===== 24시간 세션 만료 체크 =====
 const SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
 async function check24HourExpiry(user) {
   if (!user) return false;
-  const lastSignInTime = user.metadata.lastSignInTime;
-  if (!lastSignInTime) return false;
-  const lastSignInMs = new Date(lastSignInTime).getTime();
-  const ageMs = Date.now() - lastSignInMs;
-  if (ageMs > SESSION_DURATION_MS) {
-    console.log('[Firebase] 24시간 세션 만료 — 자동 로그아웃');
+  const stored = window.localStorage.getItem('fbLoginTime');
+  const ms = stored ? parseInt(stored, 10) : new Date(user.metadata.lastSignInTime).getTime();
+  if (Date.now() - ms > SESSION_DURATION_MS) {
+    window.localStorage.removeItem('fbLoginTime');
+    window.localStorage.removeItem('fbUserEmail');
     await auth.signOut();
     return true;
   }
   return false;
 }
 setInterval(() => { if (auth.currentUser) check24HourExpiry(auth.currentUser); }, 60 * 60 * 1000);
-window.addEventListener('focus', () => { if (auth.currentUser) check24HourExpiry(auth.currentUser); });
 
-// ===== 팀원 승인 체크 =====
 async function checkTeamMembership(user) {
+  // 익명 사용자: 이메일은 localStorage에서 가져옴
+  if (!user.email) {
+    user = Object.assign({}, user, { email: window.localStorage.getItem('fbUserEmail') || '' });
+  }
   if (user.email === ADMIN_EMAIL) {
     await db.collection('members').doc(user.uid).set({
-      email: user.email,
-      status: 'approved',
-      role: 'admin',
-      approvedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      approvedBy: 'system'
+      email: user.email, status: 'approved', role: 'admin',
+      approvedAt: firebase.firestore.FieldValue.serverTimestamp(), approvedBy: 'system'
     }, { merge: true });
     return { approved: true, isAdmin: true };
   }
-  const memSnap = await db.collection('members').doc(user.uid).get();
-  if (memSnap.exists) {
-    const data = memSnap.data();
-    if (data.status === 'approved') return { approved: true, isAdmin: data.role === 'admin' };
-    if (data.status === 'pending') return { approved: false, status: 'pending' };
+  const ms = await db.collection('members').doc(user.uid).get();
+  if (ms.exists) {
+    const d = ms.data();
+    if (d.status === 'approved') return { approved: true, isAdmin: d.role === 'admin' };
+    if (d.status === 'pending') return { approved: false, status: 'pending' };
     return { approved: false, status: 'rejected' };
   }
-  // 사전 등록 체크
-  const approvedSnap = await db.collection('approvedEmails').doc(user.email.toLowerCase()).get();
-  if (approvedSnap.exists) {
+  const ap = await db.collection('approvedEmails').doc(user.email.toLowerCase()).get();
+  if (ap.exists) {
     await db.collection('members').doc(user.uid).set({
-      email: user.email,
-      status: 'approved',
-      role: 'member',
+      email: user.email, status: 'approved', role: 'member',
       approvedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      approvedBy: approvedSnap.data().addedBy || 'admin (사전 등록)',
+      approvedBy: ap.data().addedBy || 'admin (사전 등록)',
       requestedAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     return { approved: true, isAdmin: false };
   }
-  // 미등록 → pending
   await db.collection('members').doc(user.uid).set({
-    email: user.email,
-    status: 'pending',
+    email: user.email, status: 'pending',
     requestedAt: firebase.firestore.FieldValue.serverTimestamp()
   });
   return { approved: false, status: 'new' };
@@ -11045,16 +10954,9 @@ async function checkTeamMembership(user) {
 function showAccessDenied(reason, email) {
   overlay.classList.remove('hidden');
   let title, msg;
-  if (reason === 'new') {
-    title = '✓ 승인 요청 등록됨';
-    msg = email + ' 계정이 관리자 승인 대기 목록에 추가되었습니다.<br><br>관리자(' + ADMIN_EMAIL + ')의 승인 후 다시 로그인해주세요.';
-  } else if (reason === 'pending') {
-    title = '⏳ 관리자 승인 대기 중';
-    msg = email + ' 계정은 아직 관리자 승인을 받지 못했습니다.<br><br>관리자(' + ADMIN_EMAIL + ')에게 문의해주세요.';
-  } else {
-    title = '✗ 접근 거부됨';
-    msg = email + ' 계정의 접근 권한이 없습니다.<br><br>관리자(' + ADMIN_EMAIL + ')에게 문의해주세요.';
-  }
+  if (reason === 'new') { title = '✓ 승인 요청 등록됨'; msg = email + ' 계정이 관리자 승인 대기에 추가되었습니다.<br>관리자(' + ADMIN_EMAIL + ')의 승인 후 다시 로그인하세요.'; }
+  else if (reason === 'pending') { title = '⏳ 관리자 승인 대기 중'; msg = email + ' 계정은 아직 승인되지 않았습니다.<br>관리자(' + ADMIN_EMAIL + ')에게 문의하세요.'; }
+  else { title = '✗ 접근 거부됨'; msg = email + ' 계정의 접근 권한이 없습니다.'; }
   document.querySelector('.fb-login-box h2').textContent = title;
   document.querySelector('.fb-login-box .sub').innerHTML = msg;
   showStep('input');
@@ -11063,114 +10965,86 @@ function showAccessDenied(reason, email) {
   msgArea.innerHTML = '<button class="primary" onclick="window.location.reload()">로그인 화면으로 돌아가기</button>';
 }
 
-// ===== 인증 상태 변경 =====
 auth.onAuthStateChanged(async (user) => {
   if (user) {
-    const expired = await check24HourExpiry(user);
-    if (expired) return;
-
-    const memCheck = await checkTeamMembership(user);
-    if (!memCheck.approved) {
-      const email = user.email;
-      const status = memCheck.status;
-      await auth.signOut();
-      showAccessDenied(status, email);
-      return;
+    // 익명 사용자: localStorage에서 이메일 복원
+    if (!user.email && window.localStorage.getItem('fbUserEmail')) {
+      user = Object.assign(Object.create(Object.getPrototypeOf(user)), user, { email: window.localStorage.getItem('fbUserEmail') });
     }
-
+    if (await check24HourExpiry(user)) return;
+    const mc = await checkTeamMembership(user);
+    if (!mc.approved) { const e = user.email; const s = mc.status; await auth.signOut(); showAccessDenied(s, e); return; }
     overlay.classList.add('hidden');
     userBar.style.display = 'flex';
     userEmailEl.textContent = user.email;
     const isAdmin = user.email === ADMIN_EMAIL;
-    if (isAdmin) {
-      userBadge.textContent = '관리자';
-      userBadge.classList.add('admin');
-    } else {
-      userBadge.textContent = '사용자';
-      userBadge.classList.remove('admin');
-    }
+    if (isAdmin) { userBadge.textContent = '관리자'; userBadge.classList.add('admin'); }
+    else { userBadge.textContent = '사용자'; userBadge.classList.remove('admin'); }
     window.fbCurrentUser = user;
     window.fbIsAdmin = isAdmin;
-
-    const lastSignInMs = new Date(user.metadata.lastSignInTime).getTime();
-    const remainHours = Math.max(0, Math.round((SESSION_DURATION_MS - (Date.now() - lastSignInMs)) / 3600000));
-    const syncStatusEl = document.getElementById('fb-sync-status');
-    if (syncStatusEl) syncStatusEl.textContent = '☁ 동기화됨 · 세션 ' + remainHours + 'h 남음';
-
+    const ms = new Date(user.metadata.lastSignInTime).getTime();
+    const hrs = Math.max(0, Math.round((SESSION_DURATION_MS - (Date.now() - ms)) / 3600000));
+    document.getElementById('fb-sync-status').textContent = '☁ 동기화됨 · 세션 ' + hrs + 'h 남음';
     await trackLoginIP(user, isAdmin);
     if (isAdmin) await showAdminAlerts();
-    if (typeof window.fbInitDataLayer === 'function') {
-      await window.fbInitDataLayer(user, isAdmin);
-    }
+    if (typeof window.fbInitDataLayer === 'function') await window.fbInitDataLayer(user, isAdmin);
   } else {
     const handled = await handleEmailLinkSignIn();
-    if (!handled) {
-      overlay.classList.remove('hidden');
-      userBar.style.display = 'none';
-      showStep('input');
-    }
+    if (!handled) { overlay.classList.remove('hidden'); userBar.style.display = 'none'; showStep('input'); }
   }
 });
 
-// ===== IP 추적 =====
 async function getCurrentIP() {
-  try {
-    const r = await fetch('https://api.ipify.org?format=json');
-    const j = await r.json();
-    return j.ip;
-  } catch (e) { return null; }
+  try { const r = await fetch('https://api.ipify.org?format=json'); const j = await r.json(); return j.ip; } catch (e) { return null; }
 }
-async function trackLoginIP(user, isAdmin) {
+async function trackLoginIP(user) {
   const ip = await getCurrentIP();
   if (!ip) return;
-  const userDocRef = db.collection('users').doc(user.uid);
-  const snap = await userDocRef.get();
+  const ref = db.collection('users').doc(user.uid);
+  const snap = await ref.get();
   const lastIP = snap.exists ? snap.data().lastIP : null;
-  await userDocRef.set({
-    email: user.email,
-    lastIP: ip,
+  await ref.set({
+    email: user.email, lastIP: ip,
     lastLogin: firebase.firestore.FieldValue.serverTimestamp(),
     userAgent: navigator.userAgent.substring(0, 200)
   }, { merge: true });
   if (lastIP && lastIP !== ip) {
     await db.collection('alerts').add({
-      type: 'ip_change',
-      userEmail: user.email,
-      userId: user.uid,
-      previousIP: lastIP,
-      newIP: ip,
-      userAgent: navigator.userAgent.substring(0, 200),
-      timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-      read: false
+      type: 'ip_change', userEmail: user.email, userId: user.uid,
+      previousIP: lastIP, newIP: ip, userAgent: navigator.userAgent.substring(0, 200),
+      timestamp: firebase.firestore.FieldValue.serverTimestamp(), read: false
     });
   }
 }
 
-// ===== 관리자 알림 표시 =====
+// 인덱스 없이 — 단순 read==false만 (orderBy 제거)
 async function showAdminAlerts() {
   try {
-    const snap = await db.collection('alerts').where('read', '==', false).orderBy('timestamp', 'desc').limit(5).get();
+    const snap = await db.collection('alerts').where('read', '==', false).limit(50).get();
     if (snap.empty) return;
     const alerts = [];
     snap.forEach(d => alerts.push({ id: d.id, ...d.data() }));
+    // 클라이언트에서 정렬
+    alerts.sort((a,b) => {
+      const ta = a.timestamp ? a.timestamp.toMillis() : 0;
+      const tb = b.timestamp ? b.timestamp.toMillis() : 0;
+      return tb - ta;
+    });
     const recent = alerts[0];
     alertText.textContent = '관리자 경고: ' + recent.userEmail + ' 가 새 IP(' + recent.newIP + ')에서 로그인 — ' + alerts.length + '건 미확인';
     alertBanner.classList.remove('hidden');
     alertClose.onclick = async () => {
-      for (const a of alerts) {
-        await db.collection('alerts').doc(a.id).set({ read: true }, { merge: true });
-      }
+      for (const a of alerts) { await db.collection('alerts').doc(a.id).set({ read: true }, { merge: true }); }
       alertBanner.classList.add('hidden');
     };
-  } catch (e) { console.warn('알림 조회 실패', e); }
+  } catch (e) { console.warn('[Firebase] 알림 조회 실패', e); }
 }
 
-// ===== 데이터 레이어 (사용자별 platformData + 공유 fxData) =====
 let _saveCloudTimer = null;
 let _isLoadingCloud = false;
 
 async function saveStateToCloud(user) {
-  if (!user || _isLoadingCloud) return;
+  if (!user || _isLoadingCloud || !window.state) return;
   try {
     document.getElementById('fb-sync-status').textContent = '☁ 저장 중...';
     await db.collection('users').doc(user.uid).set({
@@ -11186,14 +11060,8 @@ async function saveStateToCloud(user) {
         updatedBy: user.email
       });
     }
-    const lastSignInMs = new Date(user.metadata.lastSignInTime).getTime();
-    const remainHours = Math.max(0, Math.round((SESSION_DURATION_MS - (Date.now() - lastSignInMs)) / 3600000));
-    document.getElementById('fb-sync-status').textContent = '☁ 동기화됨 · 세션 ' + remainHours + 'h 남음';
-  } catch (e) {
-    console.error('[Firebase] 저장 실패', e);
-    document.getElementById('fb-sync-status').textContent = '⚠ 저장 실패';
-    document.getElementById('fb-sync-status').style.color = '#dc2626';
-  }
+    document.getElementById('fb-sync-status').textContent = '☁ 동기화됨';
+  } catch (e) { console.error('[Firebase] 저장 실패', e); }
 }
 function debounceSaveToCloud(user) {
   if (_saveCloudTimer) clearTimeout(_saveCloudTimer);
@@ -11201,95 +11069,85 @@ function debounceSaveToCloud(user) {
 }
 
 window.fbInitDataLayer = async (user, isAdmin) => {
+  if (!window.state) {
+    console.warn('[Firebase] window.state가 아직 정의 안됨, 잠시 후 재시도');
+    setTimeout(() => window.fbInitDataLayer(user, isAdmin), 500);
+    return;
+  }
   _isLoadingCloud = true;
   document.getElementById('fb-sync-status').textContent = '☁ 데이터 불러오는 중...';
   try {
-    const userSnap = await db.collection('users').doc(user.uid).get();
-    const cloudUserData = userSnap.exists ? userSnap.data() : null;
-    const cloudPlatformData = cloudUserData && cloudUserData.platformData;
-    const fxSnap = await db.collection('shared').doc('fxData').get();
-    const cloudFxData = fxSnap.exists ? fxSnap.data().fxData : null;
-    let localData = null;
-    try { const raw = localStorage.getItem('feeCalcData_v2'); if (raw) localData = JSON.parse(raw); } catch (e) {}
+    const us = await db.collection('users').doc(user.uid).get();
+    const cd = us.exists ? us.data() : null;
+    const cpd = cd && cd.platformData;
+    const fs = await db.collection('shared').doc('fxData').get();
+    const cfx = fs.exists ? fs.data().fxData : null;
+    let local = null;
+    try { const r = localStorage.getItem('feeCalcData_v2'); if (r) local = JSON.parse(r); } catch (e) {}
 
-    if (cloudFxData) {
-      window.state.fxData = cloudFxData;
-    } else if (localData && localData.fxData && Object.keys(localData.fxData).length) {
-      window.state.fxData = localData.fxData;
+    if (cfx) {
+      window.state.fxData = cfx;
+    } else if (local && local.fxData && Object.keys(local.fxData).length) {
+      window.state.fxData = local.fxData;
       if (isAdmin) {
         await db.collection('shared').doc('fxData').set({
-          fxData: localData.fxData,
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-          updatedBy: user.email,
-          migratedFromLocal: true
+          fxData: local.fxData, updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedBy: user.email, migratedFromLocal: true
         });
       }
     }
 
-    if (cloudPlatformData) {
-      window.state.platformData = cloudPlatformData;
-    } else if (localData && localData.platformData) {
-      window.state.platformData = localData.platformData;
+    if (cpd) {
+      window.state.platformData = cpd;
+    } else if (local && local.platformData) {
+      window.state.platformData = local.platformData;
       await db.collection('users').doc(user.uid).set({
-        email: user.email,
-        platformData: localData.platformData,
-        selectedYear: localData.selectedYear || window.state.selectedYear,
+        email: user.email, platformData: local.platformData,
+        selectedYear: local.selectedYear || window.state.selectedYear,
         migratedFromLocal: true,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
-    } else {
-      window.state.platformData = {};
-    }
+    } else { window.state.platformData = {}; }
 
-    if (cloudUserData && cloudUserData.selectedYear) {
-      window.state.selectedYear = cloudUserData.selectedYear;
-    }
+    if (cd && cd.selectedYear) window.state.selectedYear = cd.selectedYear;
 
-    const origSaveState = window.saveState;
-    window.saveState = function() {
-      if (typeof origSaveState === 'function') origSaveState();
-      debounceSaveToCloud(window.fbCurrentUser);
-    };
+    const orig = window.saveState;
+    window.saveState = function() { if (typeof orig === 'function') orig(); debounceSaveToCloud(window.fbCurrentUser); };
 
     _isLoadingCloud = false;
     if (typeof window.renderDashboard === 'function') window.renderDashboard();
     if (typeof window.renderSettings === 'function') window.renderSettings();
     if (typeof window.renderYearChips === 'function') window.renderYearChips();
-
     document.getElementById('fb-sync-status').textContent = '☁ 동기화됨';
 
-    // 비관리자: 환율 UI 잠금
-    if (!isAdmin) {
-      const upZone = document.getElementById('up-zone');
-      if (upZone) upZone.style.display = 'none';
-      const fxSection = document.querySelector('.section');
-      if (fxSection && !fxSection.querySelector('.fx-readonly-banner')) {
-        const banner = document.createElement('div');
-        banner.className = 'fx-readonly-banner';
-        banner.style.cssText = 'background:#fef3c7; border:1px solid #fbbf24; padding:12px 14px; border-radius:8px; margin:12px 0; font-size:13px; color:#78350f;';
-        banner.innerHTML = '🔒 <strong>환율 관리는 관리자 전용입니다.</strong><br>현재 적용 환율을 조회만 가능하며, 변경/추가는 관리자에게 요청하세요.';
-        const h3 = fxSection.querySelector('h3');
-        if (h3 && h3.parentNode) h3.parentNode.insertBefore(banner, h3.nextSibling);
-      }
-      const hideAdminButtons = () => {
+    // 비관리자: 환율 UI 잠금 (renderSettings 매번 호출돼도 적용되도록)
+    function applyAdminLock() {
+      if (isAdmin) {
+        // 팀원 관리 섹션 보이기
+        const sec = document.getElementById('fb-team-section');
+        if (sec) sec.style.display = 'block';
+      } else {
+        const upZone = document.getElementById('up-zone');
+        if (upZone) upZone.style.display = 'none';
         document.querySelectorAll('button[onclick*="uploadForYear"], button[onclick*="uploadForCurrency"], button[onclick*="deleteCurrencyFromYear"]').forEach(b => b.style.display = 'none');
-      };
-      hideAdminButtons();
-      const _origRS = window.renderSettings;
-      window.renderSettings = function() {
-        if (typeof _origRS === 'function') _origRS();
-        setTimeout(hideAdminButtons, 50);
-      };
-    }
-
-    // 관리자: 팀원 관리 섹션 표시
-    if (isAdmin) {
-      const sec = document.getElementById('fb-team-section');
-      if (sec) {
-        sec.style.display = 'block';
-        if (typeof window.fbLoadTeamMembers === 'function') window.fbLoadTeamMembers();
+        const fxSection = document.querySelector('.section');
+        if (fxSection && !fxSection.querySelector('.fx-readonly-banner')) {
+          const banner = document.createElement('div');
+          banner.className = 'fx-readonly-banner';
+          banner.style.cssText = 'background:#fef3c7; border:1px solid #fbbf24; padding:12px 14px; border-radius:8px; margin:12px 0; font-size:13px; color:#78350f;';
+          banner.innerHTML = '🔒 <strong>환율 관리는 관리자 전용입니다.</strong>';
+          const h3 = fxSection.querySelector('h3');
+          if (h3 && h3.parentNode) h3.parentNode.insertBefore(banner, h3.nextSibling);
+        }
       }
     }
+    applyAdminLock();
+    const _origRS = window.renderSettings;
+    window.renderSettings = function() {
+      if (typeof _origRS === 'function') _origRS();
+      setTimeout(applyAdminLock, 50);
+      if (isAdmin) setTimeout(() => { if (typeof window.fbLoadTeamMembers === 'function') window.fbLoadTeamMembers(); }, 100);
+    };
 
     console.log('[Firebase] 데이터 레이어 초기화 완료');
   } catch (e) {
@@ -11299,16 +11157,12 @@ window.fbInitDataLayer = async (user, isAdmin) => {
   }
 };
 
-// ===== 환율 변경 이력 =====
 window.fbLogFxChange = async function(action, details) {
-  const user = window.fbCurrentUser;
-  if (!user) return;
+  if (!window.fbCurrentUser) return;
   try {
     await db.collection('fxHistory').add({
-      action,
-      details: details || {},
-      userEmail: user.email,
-      userId: user.uid,
+      action, details: details || {},
+      userEmail: window.fbCurrentUser.email, userId: window.fbCurrentUser.uid,
       timestamp: firebase.firestore.FieldValue.serverTimestamp()
     });
   } catch (e) { console.error(e); }
@@ -11318,200 +11172,127 @@ window.fbShowFxHistory = async function() {
   const modal = document.getElementById('fb-fx-history-modal');
   if (!modal) return;
   modal.style.display = 'flex';
-  const listEl = document.getElementById('fb-fx-history-list');
-  listEl.innerHTML = '<div style="padding:20px; color:#6b7280; text-align:center;">이력 불러오는 중...</div>';
+  const list = document.getElementById('fb-fx-history-list');
+  list.innerHTML = '<div style="padding:20px; text-align:center;">불러오는 중...</div>';
   try {
     const snap = await db.collection('fxHistory').orderBy('timestamp', 'desc').limit(50).get();
-    if (snap.empty) {
-      listEl.innerHTML = '<div style="padding:20px; color:#6b7280; text-align:center;">아직 변경 이력이 없습니다</div>';
-      return;
-    }
-    let html = '';
+    if (snap.empty) { list.innerHTML = '<div style="padding:20px; text-align:center;">이력 없음</div>'; return; }
+    let h = '';
     snap.forEach(d => {
       const data = d.data();
-      const ts = data.timestamp ? data.timestamp.toDate() : new Date();
-      const tsStr = ts.toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' });
+      const ts = data.timestamp ? data.timestamp.toDate().toLocaleString('ko-KR') : '-';
       const det = data.details || {};
-      let actionLabel = '', actionColor = '';
-      if (data.action === 'upload') { actionLabel = '환율 등록'; actionColor = '#10b981'; }
-      else if (data.action === 'delete') { actionLabel = '환율 삭제'; actionColor = '#dc2626'; }
-      else { actionLabel = data.action || '변경'; actionColor = '#6b7280'; }
-      let detailStr = '';
-      if (det.year && det.currencies) {
-        detailStr = det.year + '년 ' + (Array.isArray(det.currencies) ? det.currencies.join(', ') : det.currencies);
-        if (det.note) detailStr += ' — ' + det.note;
-      } else if (det.note) detailStr = det.note;
-      html += '<div style="padding:12px 14px; border-bottom:1px solid #f3f4f6;">' +
-        '<div style="font-size:11px; color:#6b7280;">' + tsStr + ' · ' + (data.userEmail || '?') + '</div>' +
-        '<div style="font-size:13px; margin-top:3px;">' +
-          '<span style="background:' + actionColor + '; color:#fff; padding:1px 7px; border-radius:4px; font-size:10px; font-weight:600; margin-right:6px;">' + actionLabel + '</span>' +
-          detailStr +
-        '</div></div>';
+      const lbl = data.action === 'upload' ? '환율 등록' : data.action === 'delete' ? '환율 삭제' : '변경';
+      const clr = data.action === 'upload' ? '#10b981' : data.action === 'delete' ? '#dc2626' : '#6b7280';
+      let dstr = det.year ? det.year + '년 ' + (Array.isArray(det.currencies) ? det.currencies.join(', ') : det.currencies) : (det.note || '');
+      h += '<div style="padding:12px 14px; border-bottom:1px solid #f3f4f6;"><div style="font-size:11px; color:#6b7280;">' + ts + ' · ' + (data.userEmail||'?') + '</div><div style="margin-top:3px;"><span style="background:' + clr + '; color:#fff; padding:1px 7px; border-radius:4px; font-size:10px; margin-right:6px;">' + lbl + '</span>' + dstr + '</div></div>';
     });
-    listEl.innerHTML = html;
-  } catch (e) {
-    listEl.innerHTML = '<div style="padding:20px; color:#dc2626; text-align:center;">조회 실패: ' + e.message + '</div>';
-  }
+    list.innerHTML = h;
+  } catch (e) { list.innerHTML = '<div style="padding:20px; color:#dc2626;">조회 실패: ' + e.message + '</div>'; }
 };
 
-// 5분 주기 환율 동기화
-setInterval(async () => {
-  if (!window.fbCurrentUser || _isLoadingCloud) return;
-  try {
-    const fxSnap = await db.collection('shared').doc('fxData').get();
-    if (fxSnap.exists) {
-      const cloudFx = fxSnap.data().fxData;
-      const localFxStr = JSON.stringify(window.state.fxData || {});
-      const cloudFxStr = JSON.stringify(cloudFx || {});
-      if (cloudFxStr !== localFxStr) {
-        window.state.fxData = cloudFx;
-        if (typeof window.renderSettings === 'function') window.renderSettings();
-        if (typeof window.renderDashboard === 'function') window.renderDashboard();
-      }
-    }
-  } catch (e) {}
-}, 5 * 60 * 1000);
-
-// ===== 팀원 관리 =====
+// ============ 팀원 관리 (관리자) ============
 window.fbAddApprovedEmail = async function() {
-  if (!window.fbIsAdmin) return alert('관리자만 가능');
-  const input = document.getElementById('fb-approved-email-input');
-  const email = (input.value || '').trim().toLowerCase();
-  if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) { alert('올바른 이메일 입력'); return; }
+  if (!window.fbIsAdmin) return;
+  const inp = document.getElementById('fb-approved-email-input');
+  const e = (inp.value || '').trim().toLowerCase();
+  if (!e || !/^[^@]+@[^@]+\.[^@]+$/.test(e)) { alert('올바른 이메일'); return; }
   try {
-    await db.collection('approvedEmails').doc(email).set({
-      email,
-      addedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      addedBy: window.fbCurrentUser.email
+    await db.collection('approvedEmails').doc(e).set({
+      email: e, addedAt: firebase.firestore.FieldValue.serverTimestamp(), addedBy: window.fbCurrentUser.email
     });
-    input.value = '';
-    if (typeof toast === 'function') toast(email + ' 사전 등록 완료', 'ok');
+    inp.value = '';
+    if (typeof toast === 'function') toast(e + ' 사전 등록 완료', 'ok');
     window.fbLoadTeamMembers();
-  } catch (e) { alert('등록 실패: ' + e.message); }
+  } catch (err) { alert('실패: ' + err.message); }
 };
 
-window.fbRemoveApprovedEmail = async function(email) {
-  if (!window.fbIsAdmin) return alert('관리자만 가능');
-  if (!confirm(email + ' 사전 등록을 제거하시겠습니까?')) return;
-  try {
-    await db.collection('approvedEmails').doc(email).delete();
-    if (typeof toast === 'function') toast(email + ' 제거', 'ok');
-    window.fbLoadTeamMembers();
-  } catch (e) { alert('제거 실패: ' + e.message); }
+window.fbRemoveApprovedEmail = async function(e) {
+  if (!window.fbIsAdmin) return;
+  if (!confirm(e + ' 사전 등록 제거?')) return;
+  try { await db.collection('approvedEmails').doc(e).delete(); window.fbLoadTeamMembers(); } catch (err) { alert(err.message); }
 };
 
 window.fbApproveTeam = async function(uid) {
   if (!window.fbIsAdmin) return;
   if (!confirm('승인하시겠습니까?')) return;
   await db.collection('members').doc(uid).set({
-    status: 'approved',
-    approvedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    status: 'approved', approvedAt: firebase.firestore.FieldValue.serverTimestamp(),
     approvedBy: window.fbCurrentUser.email
   }, { merge: true });
-  if (typeof toast === 'function') toast('승인 완료', 'ok');
   window.fbLoadTeamMembers();
 };
 
 window.fbRejectTeam = async function(uid) {
   if (!window.fbIsAdmin) return;
   if (!confirm('거부하시겠습니까?')) return;
-  await db.collection('members').doc(uid).set({
-    status: 'rejected',
-    rejectedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    rejectedBy: window.fbCurrentUser.email
-  }, { merge: true });
-  if (typeof toast === 'function') toast('거부 완료', 'ok');
+  await db.collection('members').doc(uid).set({ status: 'rejected' }, { merge: true });
   window.fbLoadTeamMembers();
 };
 
 window.fbRevokeTeam = async function(uid) {
   if (!window.fbIsAdmin) return;
-  if (!confirm('권한 회수하시겠습니까?')) return;
-  await db.collection('members').doc(uid).set({
-    status: 'revoked',
-    revokedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    revokedBy: window.fbCurrentUser.email
-  }, { merge: true });
-  if (typeof toast === 'function') toast('회수 완료', 'ok');
+  if (!confirm('권한 회수?')) return;
+  await db.collection('members').doc(uid).set({ status: 'revoked' }, { merge: true });
   window.fbLoadTeamMembers();
 };
 
 window.fbLoadTeamMembers = async function() {
-  const container = document.getElementById('fb-team-list');
-  if (!container) return;
-  if (!window.fbIsAdmin) { container.innerHTML = '<div style="color:#dc2626;">관리자만 접근 가능</div>'; return; }
-  container.innerHTML = '<div style="color:#6b7280; padding:12px;">로드 중...</div>';
+  const c = document.getElementById('fb-team-list');
+  if (!c) return;
+  if (!window.fbIsAdmin) { c.innerHTML = '<div>관리자만 접근</div>'; return; }
+  c.innerHTML = '<div style="padding:12px;">로드 중...</div>';
   try {
-    const [approvedSnap, membersSnap] = await Promise.all([
+    const [aSnap, mSnap] = await Promise.all([
       db.collection('approvedEmails').get(),
       db.collection('members').get()
     ]);
-    const approvedEmails = [];
-    approvedSnap.forEach(d => approvedEmails.push({ id: d.id, ...d.data() }));
-    approvedEmails.sort((a,b) => (a.email||'').localeCompare(b.email||''));
-    const members = [];
-    membersSnap.forEach(d => members.push({ id: d.id, ...d.data() }));
-    const pending = members.filter(m => m.status === 'pending');
-    const approved = members.filter(m => m.status === 'approved' && m.role !== 'admin');
-    const admins = members.filter(m => m.role === 'admin');
+    const ae = []; aSnap.forEach(d => ae.push({ id: d.id, ...d.data() })); ae.sort((a,b) => (a.email||'').localeCompare(b.email||''));
+    const ms = []; mSnap.forEach(d => ms.push({ id: d.id, ...d.data() }));
+    const pending = ms.filter(m => m.status === 'pending');
+    const approved = ms.filter(m => m.status === 'approved' && m.role !== 'admin');
+    const admins = ms.filter(m => m.role === 'admin');
 
-    let html = '';
-    html += '<div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:12px 14px; margin-bottom:14px;">' +
-      '<div style="font-size:13px; font-weight:700; color:#3730a3; margin-bottom:8px;">📧 팀원 이메일 사전 등록</div>' +
-      '<div style="font-size:11px; color:#6b7280; margin-bottom:8px;">미리 등록한 이메일은 첫 로그인 시 자동 승인됩니다.</div>' +
-      '<div style="display:flex; gap:6px;">' +
-        '<input id="fb-approved-email-input" type="email" placeholder="example@taxexpert.kr" style="flex:1; padding:7px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;" onkeydown="if(event.key===\'Enter\') fbAddApprovedEmail()">' +
-        '<button class="btn primary btn-sm" onclick="fbAddApprovedEmail()">+ 등록</button>' +
-      '</div>' +
-    '</div>';
+    let h = '';
+    h += '<div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:12px; margin-bottom:14px;">';
+    h += '<div style="font-size:13px; font-weight:700; color:#3730a3; margin-bottom:8px;">📧 팀원 이메일 사전 등록</div>';
+    h += '<div style="font-size:11px; color:#6b7280; margin-bottom:8px;">미리 등록한 이메일은 첫 로그인 시 자동 승인됩니다.</div>';
+    h += '<div style="display:flex; gap:6px;"><input id="fb-approved-email-input" type="email" placeholder="example@taxexpert.kr" style="flex:1; padding:7px 10px; border:1px solid #d1d5db; border-radius:6px;" onkeydown="if(event.key===\'Enter\') fbAddApprovedEmail()"><button class="btn primary btn-sm" onclick="fbAddApprovedEmail()">+ 등록</button></div></div>';
 
-    if (approvedEmails.length) {
-      html += '<div style="margin-bottom:18px;"><div style="font-size:12px; font-weight:600; margin-bottom:6px;">사전 등록된 이메일 (' + approvedEmails.length + '명)</div><div style="background:#f9fafb; border-radius:6px; padding:6px;">';
-      for (const e of approvedEmails) {
-        const date = e.addedAt ? e.addedAt.toDate().toLocaleDateString('ko-KR') : '-';
-        const joined = members.find(m => (m.email||'').toLowerCase() === e.email);
-        const stat = joined ? ' <span style="color:#10b981; font-size:10px;">✓ 가입됨</span>' : ' <span style="color:#9ca3af; font-size:10px;">대기</span>';
-        html += '<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; font-size:12px;"><span><strong>' + e.email + '</strong>' + stat + ' <span style="color:#9ca3af;">' + date + '</span></span>' +
-          '<button class="btn btn-sm danger" onclick="fbRemoveApprovedEmail(\'' + e.email + '\')" style="font-size:10px;">제거</button></div>';
+    if (ae.length) {
+      h += '<div style="margin-bottom:18px;"><div style="font-size:12px; font-weight:600; margin-bottom:6px;">사전 등록된 이메일 (' + ae.length + '명)</div><div style="background:#f9fafb; border-radius:6px; padding:6px;">';
+      for (const e of ae) {
+        const d = e.addedAt ? e.addedAt.toDate().toLocaleDateString('ko-KR') : '-';
+        const j = ms.find(m => (m.email||'').toLowerCase() === e.email);
+        const s = j ? '<span style="color:#10b981; font-size:10px;">✓ 가입됨</span>' : '<span style="color:#9ca3af; font-size:10px;">대기</span>';
+        h += '<div style="display:flex; justify-content:space-between; padding:6px 8px; font-size:12px;"><span><strong>' + e.email + '</strong> ' + s + ' <span style="color:#9ca3af;">' + d + '</span></span><button class="btn btn-sm danger" onclick="fbRemoveApprovedEmail(\'' + e.email + '\')">제거</button></div>';
       }
-      html += '</div></div>';
+      h += '</div></div>';
     }
 
     if (pending.length) {
-      html += '<div style="margin-bottom:18px; background:#fef3c7; border:1px solid #fbbf24; border-radius:8px; padding:12px;">';
-      html += '<div style="font-size:13px; font-weight:700; color:#78350f; margin-bottom:8px;">⚠ 승인 대기 (' + pending.length + '건)</div>';
+      h += '<div style="margin-bottom:18px; background:#fef3c7; border:1px solid #fbbf24; border-radius:8px; padding:12px;">';
+      h += '<div style="font-size:13px; font-weight:700; color:#78350f; margin-bottom:8px;">⚠ 승인 대기 (' + pending.length + '건)</div>';
       for (const m of pending) {
-        const date = m.requestedAt ? m.requestedAt.toDate().toLocaleString('ko-KR') : '-';
-        html += '<div style="display:flex; justify-content:space-between; align-items:center; padding:8px; background:#fff; border-radius:6px; margin-bottom:6px;">' +
-          '<div><strong>' + m.email + '</strong> <span style="color:#9ca3af; font-size:11px;">· ' + date + '</span></div>' +
-          '<div><button class="btn btn-sm primary" onclick="fbApproveTeam(\'' + m.id + '\')" style="margin-right:4px;">승인</button>' +
-          '<button class="btn btn-sm danger" onclick="fbRejectTeam(\'' + m.id + '\')">거부</button></div>' +
-        '</div>';
+        const d = m.requestedAt ? m.requestedAt.toDate().toLocaleString('ko-KR') : '-';
+        h += '<div style="display:flex; justify-content:space-between; padding:8px; background:#fff; border-radius:6px; margin-bottom:6px;"><div><strong>' + m.email + '</strong> · ' + d + '</div><div><button class="btn btn-sm primary" onclick="fbApproveTeam(\'' + m.id + '\')">승인</button> <button class="btn btn-sm danger" onclick="fbRejectTeam(\'' + m.id + '\')">거부</button></div></div>';
       }
-      html += '</div>';
+      h += '</div>';
     }
 
     if (admins.length || approved.length) {
-      html += '<div><div style="font-size:12px; font-weight:600; margin-bottom:6px;">승인된 팀원</div>';
+      h += '<div><div style="font-size:12px; font-weight:600; margin-bottom:6px;">승인된 팀원 (' + (admins.length + approved.length) + '명)</div>';
       for (const m of [...admins, ...approved]) {
-        const isAdminUser = m.role === 'admin';
-        const apvDate = m.approvedAt ? m.approvedAt.toDate().toLocaleDateString('ko-KR') : '-';
-        html += '<div style="display:flex; justify-content:space-between; padding:8px; border-bottom:1px solid #f3f4f6; font-size:12px;">' +
-          '<span><strong>' + m.email + '</strong> ' +
-          (isAdminUser ? '<span style="background:#dc2626; color:#fff; padding:1px 6px; border-radius:4px; font-size:10px;">관리자</span>' : '<span style="background:#10b981; color:#fff; padding:1px 6px; border-radius:4px; font-size:10px;">팀원</span>') +
-          ' <span style="color:#9ca3af;">' + apvDate + '</span></span>' +
-          (isAdminUser ? '' : '<button class="btn btn-sm danger" onclick="fbRevokeTeam(\'' + m.id + '\')" style="font-size:10px;">회수</button>') +
-        '</div>';
+        const isA = m.role === 'admin';
+        h += '<div style="display:flex; justify-content:space-between; padding:8px; border-bottom:1px solid #f3f4f6; font-size:12px;"><span><strong>' + m.email + '</strong> ' + (isA ? '<span style="background:#dc2626; color:#fff; padding:1px 6px; border-radius:4px; font-size:10px;">관리자</span>' : '<span style="background:#10b981; color:#fff; padding:1px 6px; border-radius:4px; font-size:10px;">팀원</span>') + '</span>' + (isA ? '' : '<button class="btn btn-sm danger" onclick="fbRevokeTeam(\'' + m.id + '\')">회수</button>') + '</div>';
       }
-      html += '</div>';
+      h += '</div>';
     }
-    container.innerHTML = html;
-  } catch (e) {
-    container.innerHTML = '<div style="color:#dc2626; padding:12px;">로드 실패: ' + e.message + '</div>';
-  }
+    c.innerHTML = h;
+  } catch (e) { c.innerHTML = '<div style="color:#dc2626;">로드 실패: ' + e.message + '</div>'; }
 };
 
-console.log('Firebase 인증 시스템 초기화 완료');
+console.log('[Firebase] 모든 함수 등록 완료');
 </script>
 </body>
 </html>
