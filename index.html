@@ -11043,24 +11043,38 @@ async function checkTeamMembership(user) {
   const memRef = doc(db, 'members', user.uid);
   const memSnap = await getDoc(memRef);
 
-  if (!memSnap.exists()) {
-    // 첫 로그인 시도 — pending 상태로 등록
-    await setDoc(memRef, {
-      email: user.email,
-      status: 'pending',
-      requestedAt: serverTimestamp()
-    });
-    return { approved: false, status: 'new' };
-  }
-
-  const data = memSnap.data();
-  if (data.status === 'approved') {
-    return { approved: true, isAdmin: data.role === 'admin' };
-  } else if (data.status === 'pending') {
-    return { approved: false, status: 'pending' };
-  } else {
+  if (memSnap.exists()) {
+    const data = memSnap.data();
+    if (data.status === 'approved') return { approved: true, isAdmin: data.role === 'admin' };
+    if (data.status === 'pending') return { approved: false, status: 'pending' };
     return { approved: false, status: 'rejected' };
   }
+
+  // 첫 로그인 — 사전 등록된 이메일인지 체크
+  const approvedRef = doc(db, 'approvedEmails', user.email.toLowerCase());
+  const approvedSnap = await getDoc(approvedRef);
+
+  if (approvedSnap.exists()) {
+    // 사전 등록된 이메일 → 자동 승인
+    await setDoc(memRef, {
+      email: user.email,
+      status: 'approved',
+      role: 'member',
+      approvedAt: serverTimestamp(),
+      approvedBy: approvedSnap.data().addedBy || 'admin (사전 등록)',
+      requestedAt: serverTimestamp()
+    });
+    console.log('[Firebase] 사전 등록된 이메일 — 자동 승인:', user.email);
+    return { approved: true, isAdmin: false };
+  }
+
+  // 미등록 이메일 → pending 상태로 등록 (관리자에게 알림)
+  await setDoc(memRef, {
+    email: user.email,
+    status: 'pending',
+    requestedAt: serverTimestamp()
+  });
+  return { approved: false, status: 'new' };
 }
 
 function showAccessDenied(reason, email) {
@@ -11483,6 +11497,41 @@ setInterval(async () => {
 }, 5 * 60 * 1000);
 
 // === 팀원 관리 (관리자 전용) ===
+window.fbAddApprovedEmail = async function() {
+  if (!window.fbIsAdmin) return alert('관리자만 가능');
+  const input = document.getElementById('fb-approved-email-input');
+  const email = (input.value || '').trim().toLowerCase();
+  if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) {
+    alert('올바른 이메일 주소를 입력해주세요');
+    return;
+  }
+  try {
+    await setDoc(doc(db, 'approvedEmails', email), {
+      email,
+      addedAt: serverTimestamp(),
+      addedBy: window.fbCurrentUser.email
+    });
+    input.value = '';
+    if (typeof toast === 'function') toast(email + ' 사전 등록 완료', 'ok');
+    window.fbLoadTeamMembers();
+  } catch (e) {
+    alert('등록 실패: ' + e.message);
+  }
+};
+
+window.fbRemoveApprovedEmail = async function(email) {
+  if (!window.fbIsAdmin) return alert('관리자만 가능');
+  if (!confirm(email + ' 사전 등록을 제거하시겠습니까?\n(이미 가입된 사용자는 영향 없음, 신규 로그인만 차단됨)')) return;
+  try {
+    const { deleteDoc } = await import('https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js');
+    await deleteDoc(doc(db, 'approvedEmails', email));
+    if (typeof toast === 'function') toast(email + ' 사전 등록 제거', 'ok');
+    window.fbLoadTeamMembers();
+  } catch (e) {
+    alert('제거 실패: ' + e.message);
+  }
+};
+
 window.fbLoadTeamMembers = async function() {
   const container = document.getElementById('fb-team-list');
   if (!container) return;
@@ -11492,7 +11541,104 @@ window.fbLoadTeamMembers = async function() {
   }
   container.innerHTML = '<div style="color:#6b7280; padding:12px;">팀원 목록 불러오는 중...</div>';
   try {
-    const snap = await getDocs(collection(db, 'members'));
+    // 사전 등록된 이메일 + 실제 가입한 회원 둘 다 로드
+    const [approvedSnap, membersSnap] = await Promise.all([
+      getDocs(collection(db, 'approvedEmails')),
+      getDocs(collection(db, 'members'))
+    ]);
+
+    const approvedEmails = [];
+    approvedSnap.forEach(d => approvedEmails.push({ id: d.id, ...d.data() }));
+    approvedEmails.sort((a,b) => (a.email || '').localeCompare(b.email || ''));
+
+    const members = [];
+    membersSnap.forEach(d => members.push({ id: d.id, ...d.data() }));
+    members.sort((a, b) => {
+      const order = { pending: 0, approved: 1, rejected: 2, revoked: 3 };
+      return (order[a.status] || 9) - (order[b.status] || 9);
+    });
+
+    const pendingMembers = members.filter(m => m.status === 'pending');
+    const approvedMembers = members.filter(m => m.status === 'approved' && m.role !== 'admin');
+    const adminMembers = members.filter(m => m.role === 'admin');
+    const otherMembers = members.filter(m => m.status === 'rejected' || m.status === 'revoked');
+
+    let html = '';
+
+    // === 1) 사전 등록 이메일 입력 ===
+    html += '<div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:12px 14px; margin-bottom:14px;">' +
+      '<div style="font-size:13px; font-weight:700; color:#3730a3; margin-bottom:8px;">📧 팀원 이메일 사전 등록</div>' +
+      '<div style="font-size:11px; color:#6b7280; margin-bottom:8px;">미리 등록한 이메일은 첫 로그인 시 자동 승인됩니다. 미등록 이메일이 로그인 시도하면 아래 "승인 대기" 목록에 표시됩니다.</div>' +
+      '<div style="display:flex; gap:6px;">' +
+        '<input id="fb-approved-email-input" type="email" placeholder="example@taxexpert.kr" style="flex:1; padding:7px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;" onkeydown="if(event.key===\'Enter\') fbAddApprovedEmail()">' +
+        '<button class="btn primary btn-sm" onclick="fbAddApprovedEmail()">+ 등록</button>' +
+      '</div>' +
+    '</div>';
+
+    // === 2) 사전 등록된 이메일 목록 ===
+    if (approvedEmails.length) {
+      html += '<div style="margin-bottom:18px;">';
+      html += '<div style="font-size:12px; font-weight:600; color:#374151; margin-bottom:6px;">사전 등록된 이메일 (' + approvedEmails.length + '명)</div>';
+      html += '<div style="background:#f9fafb; border-radius:6px; padding:6px;">';
+      for (const e of approvedEmails) {
+        const date = e.addedAt ? e.addedAt.toDate().toLocaleDateString('ko-KR') : '-';
+        const memberJoined = members.find(m => (m.email || '').toLowerCase() === e.email);
+        const joinStatus = memberJoined ? ' <span style="color:#10b981; font-size:10px;">✓ 가입됨</span>' : ' <span style="color:#9ca3af; font-size:10px;">아직 가입 안 함</span>';
+        html += '<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; font-size:12px; border-bottom:1px solid #f3f4f6;">' +
+          '<span><strong>' + e.email + '</strong>' + joinStatus + ' <span style="color:#9ca3af;">' + date + ' 등록</span></span>' +
+          '<button class="btn btn-sm danger" onclick="fbRemoveApprovedEmail(\'' + e.email + '\')" style="font-size:10px;">제거</button>' +
+        '</div>';
+      }
+      html += '</div></div>';
+    }
+
+    // === 3) 승인 대기 (미등록 이메일이 로그인 시도) ===
+    if (pendingMembers.length) {
+      html += '<div style="margin-bottom:18px; background:#fef3c7; border:1px solid #fbbf24; border-radius:8px; padding:12px;">';
+      html += '<div style="font-size:13px; font-weight:700; color:#78350f; margin-bottom:8px;">⚠ 승인 대기 — 사전 등록 안 된 이메일이 로그인 시도 (' + pendingMembers.length + '건)</div>';
+      for (const m of pendingMembers) {
+        const date = m.requestedAt ? m.requestedAt.toDate().toLocaleString('ko-KR') : '-';
+        html += '<div style="display:flex; justify-content:space-between; align-items:center; padding:8px; background:#fff; border-radius:6px; margin-bottom:6px;">' +
+          '<div><strong>' + m.email + '</strong> <span style="color:#9ca3af; font-size:11px;">· ' + date + '</span></div>' +
+          '<div>' +
+            '<button class="btn btn-sm primary" onclick="fbApproveTeam(\'' + m.id + '\')" style="margin-right:4px;">승인</button>' +
+            '<button class="btn btn-sm danger" onclick="fbRejectTeam(\'' + m.id + '\')">거부</button>' +
+          '</div>' +
+        '</div>';
+      }
+      html += '</div>';
+    }
+
+    // === 4) 승인된 팀원 ===
+    if (adminMembers.length || approvedMembers.length) {
+      html += '<div style="margin-bottom:14px;">';
+      html += '<div style="font-size:12px; font-weight:600; color:#374151; margin-bottom:6px;">승인된 팀원 (' + (adminMembers.length + approvedMembers.length) + '명)</div>';
+      html += '<table style="width:100%; border-collapse:collapse; font-size:12px;">';
+      html += '<thead><tr style="background:#f9fafb;"><th style="text-align:left; padding:8px;">이메일</th><th style="text-align:center; padding:8px;">역할</th><th style="text-align:center; padding:8px;">승인일</th><th style="text-align:center; padding:8px;">작업</th></tr></thead><tbody>';
+      for (const m of [...adminMembers, ...approvedMembers]) {
+        const isAdmin = m.role === 'admin';
+        const apvDate = m.approvedAt ? m.approvedAt.toDate().toLocaleDateString('ko-KR') : '-';
+        html += '<tr style="border-bottom:1px solid #f3f4f6;">' +
+          '<td style="padding:8px;">' + m.email + '</td>' +
+          '<td style="padding:8px; text-align:center;">' + (isAdmin ? '<span style="background:#dc2626; color:#fff; padding:1px 6px; border-radius:4px; font-size:10px;">관리자</span>' : '<span style="background:#10b981; color:#fff; padding:1px 6px; border-radius:4px; font-size:10px;">팀원</span>') + '</td>' +
+          '<td style="padding:8px; text-align:center; color:#6b7280;">' + apvDate + '</td>' +
+          '<td style="padding:8px; text-align:center;">' + (isAdmin ? '-' : '<button class="btn btn-sm danger" onclick="fbRevokeTeam(\'' + m.id + '\')" style="font-size:11px;">권한 회수</button>') + '</td>' +
+        '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    // === 5) 거부/회수된 팀원 (있을 때만) ===
+    if (otherMembers.length) {
+      html += '<div style="margin-bottom:14px; opacity:0.7;">';
+      html += '<div style="font-size:12px; font-weight:600; color:#6b7280; margin-bottom:6px;">거부/회수된 팀원 (' + otherMembers.length + '명)</div>';
+      for (const m of otherMembers) {
+        html += '<div style="font-size:12px; padding:6px 8px; color:#9ca3af;">' + m.email + ' — ' + m.status + '</div>';
+      }
+      html += '</div>';
+    }
+
+    container.innerHTML = html;
     if (snap.empty) {
       container.innerHTML = '<div style="color:#6b7280; padding:12px;">등록된 팀원이 없습니다</div>';
       return;
@@ -11533,21 +11679,6 @@ window.fbLoadTeamMembers = async function() {
         actions += '<button class="btn btn-sm danger" onclick="fbRevokeTeam(\'' + m.id + '\')">권한 회수</button>';
       }
 
-      html += '<tr style="border-bottom:1px solid #f3f4f6;">' +
-        '<td style="padding:10px;">' + m.email + adminBadge + '</td>' +
-        '<td style="padding:10px; text-align:center;">' + statusBadge + '</td>' +
-        '<td style="padding:10px; text-align:center; color:#6b7280; font-size:12px;">' + reqDate + '</td>' +
-        '<td style="padding:10px; text-align:center; color:#6b7280; font-size:12px;">' + apvDate + '</td>' +
-        '<td style="padding:10px; text-align:center;">' + (actions || '-') + '</td>' +
-      '</tr>';
-    }
-    html += '</tbody></table>';
-
-    const pendingCount = members.filter(m => m.status === 'pending').length;
-    const summary = '<div style="padding:8px 0; font-size:12px; color:#4b5563;">' +
-      '총 ' + members.length + '명 · 승인 대기 <strong style="color:#f59e0b;">' + pendingCount + '명</strong></div>';
-
-    container.innerHTML = summary + html;
   } catch (e) {
     container.innerHTML = '<div style="color:#dc2626; padding:12px;">로드 실패: ' + e.message + '</div>';
     console.error(e);
