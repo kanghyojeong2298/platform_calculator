@@ -936,9 +936,10 @@ function renderBanner() {
 function renderAccountPanel() {
   const all = calcAllAccountTotals();
   const grid = document.getElementById('account-grid');
-  grid.innerHTML = DISPLAY_ACCOUNTS.map(a =>
-    '<div class="account-c ' + ACCOUNT_CSS[a] + '"><div class="account-l">' + a + '</div><div class="account-v">' + formatNum(all[a], 0) + '</div></div>'
-  ).join('');
+  grid.innerHTML = DISPLAY_ACCOUNTS.map(a => {
+    const lbl = (a === '매출환불') ? '매출환불(비용X)' : a;
+    return '<div class="account-c ' + ACCOUNT_CSS[a] + '"><div class="account-l">' + lbl + '</div><div class="account-v">' + formatNum(all[a], 0) + '</div></div>';
+  }).join('');
 }
 
 function buildCard(p) {
@@ -1788,7 +1789,7 @@ const ETSY_MAP = [
   { kw:'Offsite Ads',           account:'광고선전비', label:'Offsite Ads 광고비' },
   { kw:'Etsy Ads',              account:'광고선전비', label:'Etsy Ads 광고비' },
   { kw:'Shipping Label',        account:'물류비',     label:'배송 라벨' },
-  { kw:'Refund',                account:'환불',       label:'환불' }
+  { kw:'Refund',                account:'매출참고',   label:'매출 환불 (Refund)' }
 ];
 
 function parseEtsyInvoice(pages) {
@@ -2168,13 +2169,13 @@ const AMAZON_MAP = [
   { kw:'Product, shipping, gift wrap taxes and regulatory fee refunded', section:'tax',      account:'매출세', label:'판매세 환불' },
   { kw:'Amazon Obligated Tax and Regulatory Fee Withheld',               section:'tax',      account:'매출세', label:'아마존 원천징수' },
 
-  // === Income 섹션 (PDF 좌상단) — 거래내역 비포함 ===
-  { kw:'FBA product sale refunds',          section:'income', account:'환불',     label:'FBA 상품 환불' },
-  { kw:'Product sale refunds (non-FBA)',    section:'income', account:'환불',     label:'비-FBA 상품 환불' },
-  { kw:'A-to-z Guarantee claims',           section:'income', account:'환불',     label:'A-to-z 클레임' },
-  { kw:'Chargebacks',                       section:'income', account:'환불',     label:'차지백' },
-  { kw:'SAFE-T reimbursement',              section:'income', account:'환불',     label:'SAFE-T 환급' },
-  { kw:'Amazon Shipping Reimbursement',     section:'income', account:'환불',     label:'아마존 배송 환급' },
+  // === Income 섹션 (PDF 좌상단) — 상품 환불은 매출 환불(매출참고)로 emit, 매출(참고)는 비emit ===
+  { kw:'FBA product sale refunds',          section:'expenses', account:'매출참고', label:'매출 환불 (FBA 상품 환불)' },
+  { kw:'Product sale refunds (non-FBA)',    section:'expenses', account:'매출참고', label:'매출 환불 (비-FBA 상품 환불)' },
+  { kw:'A-to-z Guarantee claims',           section:'expenses', account:'매출참고', label:'매출 환불 (A-to-z 클레임)' },
+  { kw:'Chargebacks',                       section:'expenses', account:'매출참고', label:'매출 환불 (차지백)' },
+  { kw:'SAFE-T reimbursement',              section:'expenses', account:'매출참고', label:'매출 환불 (SAFE-T 환급)' },
+  { kw:'Amazon Shipping Reimbursement',     section:'expenses', account:'매출참고', label:'매출 환불 (아마존 배송 환급)' },
   { kw:'FBA product sales',                 section:'income', account:'매출참고', label:'FBA 상품매출' },
   { kw:'Product sales (non-FBA)',           section:'income', account:'매출참고', label:'비-FBA 상품매출' },
   { kw:'FBA liquidation proceeds adjustments', section:'income', account:'매출참고', label:'청산 정산조정' },
@@ -5933,7 +5934,8 @@ function buildQuarterlyByPlatform(allTxns) {
         currency: t.platform.currency,
         fee: { 1:0, 2:0, 3:0, 4:0 },
         rev: { 1:0, 2:0, 3:0, 4:0 },
-        totalFee: 0, totalRev: 0,
+        refund: { 1:0, 2:0, 3:0, 4:0 },
+        totalFee: 0, totalRev: 0, totalRefund: 0,
         feeForeignByCur: {}, revForeignByCur: {}
       };
     }
@@ -5941,9 +5943,16 @@ function buildQuarterlyByPlatform(allTxns) {
     if (krw == null) continue;
     const q = getQuarter(t.date);
     if (t.account === '매출참고') {
-      map[pid].rev[q] += krw;
-      map[pid].totalRev += krw;
-      map[pid].revForeignByCur[t.currency] = (map[pid].revForeignByCur[t.currency] || 0) + Math.abs(t.amount);
+      // '매출 환불' 라벨이면 매출이 아니라 매출환불 버킷으로 분리 (참고용, 비용X)
+      const isRefund = /매출\s*환불|Refund Amount|Voucher Sponsored/i.test(t.name || '');
+      if (isRefund) {
+        map[pid].refund[q] += krw;
+        map[pid].totalRefund += krw;
+      } else {
+        map[pid].rev[q] += krw;
+        map[pid].totalRev += krw;
+        map[pid].revForeignByCur[t.currency] = (map[pid].revForeignByCur[t.currency] || 0) + Math.abs(t.amount);
+      }
     } else {
       map[pid].fee[q] += krw;
       map[pid].totalFee += krw;
@@ -5985,8 +5994,8 @@ window.exportExcel = function() {
   const byPQ = buildQuarterlyByPlatform(allTxns);
 
   // 그랜드 토탈
-  let grandFee = 0, grandRev = 0;
-  Object.values(byPQ).forEach(v => { grandFee += v.totalFee; grandRev += v.totalRev; });
+  let grandFee = 0, grandRev = 0, grandRefund = 0;
+  Object.values(byPQ).forEach(v => { grandFee += v.totalFee; grandRev += v.totalRev; grandRefund += (v.totalRefund || 0); });
 
   // ============ 시트 1: 요약 (분기별 양식) ============
   const summary = [];
@@ -5998,6 +6007,7 @@ window.exportExcel = function() {
   // 핵심 박스
   summary.push(['💰 전체 총 수수료 (비용)', '', '', '', '', '', grandFee]);
   summary.push(['💵 전체 총 매출액 (참고)', '', '', '', '', '', grandRev]);
+  summary.push(['🧾 매출환불 금액 (참고용, 비용X)', '', '', '', '', '', grandRefund]);
   summary.push(['거래 건수', '', '', '', '', '', allTxns.length]);
 
   // 각 플랫폼 그룹별 수수료/매출 분기 표
@@ -6039,17 +6049,21 @@ window.exportExcel = function() {
     }
   }
 
-  // 회계 계정별 합계
-  const accSum = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0 };
+  // 회계 계정별 합계 — 환불 행 제외 (매출환불은 별도 표기)
+  const accSum = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 기타:0 };
   for (const t of allTxns) {
     const krw = toKRW(t.amount, t.currency, t.date);
     if (krw == null) continue;
-    if (t.account === '매출참고') continue;
-    accSum[t.account] = (accSum[t.account] || 0) + krw;
+    if (t.account === '매출참고') continue;       // 매출(참고) + 매출환불(참고) 모두 제외
+    if (t.account === '환불') continue;           // 레거시 환불 잔여 데이터 제외
+    if (accSum.hasOwnProperty(t.account)) {
+      accSum[t.account] += krw;
+    }
   }
   summary.push(['═══ 회계 계정별 합계 (KRW) ═══']);
-  ACCOUNTS.forEach(a => summary.push([a, '', '', '', '', '', accSum[a]]));
+  COST_ACCOUNTS.forEach(a => summary.push([a, '', '', '', '', '', accSum[a]]));
   summary.push(['전체 비용 합계', '', '', '', '', '', grandFee]);
+  summary.push(['매출환불 (참고용, 비용X)', '', '', '', '', '', grandRefund]);
   summary.push([]);
 
   const sumSheet = XLSX.utils.aoa_to_sheet(summary);
@@ -11272,6 +11286,24 @@ window.fbInitDataLayer = async (user, isAdmin) => {
                 t.account = '광고선전비'; t.name = '코인캐시백';
                 t.amount = -Math.abs(t.amount); // 차감 처리
                 migrated++;
+              }
+              // === Amazon 상품 환불류 → 매출 환불(매출참고) ===
+              else if (/FBA product sale refunds|FBA 상품 환불/i.test(nm)) {
+                t.account = '매출참고'; t.name = '매출 환불 (FBA 상품 환불)'; migrated++;
+              } else if (/Product sale refunds \(non-FBA\)|비-FBA 상품 환불/i.test(nm)) {
+                t.account = '매출참고'; t.name = '매출 환불 (비-FBA 상품 환불)'; migrated++;
+              } else if (/A-to-z Guarantee claims|A-to-z 클레임/i.test(nm)) {
+                t.account = '매출참고'; t.name = '매출 환불 (A-to-z 클레임)'; migrated++;
+              } else if (/Chargebacks|차지백/i.test(nm)) {
+                t.account = '매출참고'; t.name = '매출 환불 (차지백)'; migrated++;
+              } else if (/SAFE-T reimbursement|SAFE-T 환급/i.test(nm)) {
+                t.account = '매출참고'; t.name = '매출 환불 (SAFE-T 환급)'; migrated++;
+              } else if (/Amazon Shipping Reimbursement|아마존 배송 환급/i.test(nm)) {
+                t.account = '매출참고'; t.name = '매출 환불 (아마존 배송 환급)'; migrated++;
+              }
+              // === Etsy 환불 → 매출 환불(매출참고) ===
+              else if (/^환불$|Etsy.*Refund|Refund$/i.test((t.name || '').trim())) {
+                t.account = '매출참고'; t.name = '매출 환불 (Refund)'; migrated++;
               }
             }
           }
