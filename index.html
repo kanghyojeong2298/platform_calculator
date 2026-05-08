@@ -6060,10 +6060,9 @@ window.exportExcel = function() {
       accSum[t.account] += krw;
     }
   }
-  summary.push(['═══ 회계 계정별 합계 (KRW) ═══']);
+  summary.push(['═══ 비용 계정별 합계 (KRW) ═══']);
   COST_ACCOUNTS.forEach(a => summary.push([a, '', '', '', '', '', accSum[a]]));
   summary.push(['전체 비용 합계', '', '', '', '', '', grandFee]);
-  summary.push(['매출환불 (참고용, 비용X)', '', '', '', '', '', grandRefund]);
   summary.push([]);
 
   const sumSheet = XLSX.utils.aoa_to_sheet(summary);
