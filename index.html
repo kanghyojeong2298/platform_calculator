@@ -11211,6 +11211,72 @@ window.fbInitDataLayer = async (user, isAdmin) => {
     const orig = window.saveState;
     window.saveState = function() { if (typeof orig === 'function') orig(); debounceSaveToCloud(window.fbCurrentUser); };
 
+    // === [V3] 코인캐시백 부호 보정 — 광고선전비로 옮겨진 코인캐시백이 양수로 남아있으면 음수로 변환 ===
+    try {
+      const v3Key = 'fbCoinCashbackSignFix_' + user.uid;
+      if (!localStorage.getItem(v3Key) && window.state && window.state.platformData) {
+        let signFixed = 0;
+        for (const yr of Object.keys(window.state.platformData)) {
+          const yearData = window.state.platformData[yr] || {};
+          for (const pid of Object.keys(yearData)) {
+            const txns = yearData[pid] || [];
+            for (const t of txns) {
+              if (!t) continue;
+              const nm = (t.name || '') + ' ' + (t.memo || '');
+              // 코인캐시백 항목이고 amount가 양수면 음수로 변환 (차감 의미 반영)
+              if (/코인캐시백|Coin Cashback/i.test(nm) && t.amount > 0) {
+                t.amount = -Math.abs(t.amount);
+                if (t.account !== '광고선전비') t.account = '광고선전비';
+                if (!t.name.includes('차감')) t.name = '코인캐시백 (광고선전비 차감)';
+                signFixed++;
+              }
+            }
+          }
+        }
+        if (signFixed > 0) {
+          console.log('[Firebase V3 보정] 코인캐시백 ' + signFixed + '건 부호 변환 (양수 → 음수)');
+          if (typeof toast === 'function') toast('코인캐시백 ' + signFixed + '건 차감 부호로 변환', 'ok');
+          if (window.fbCurrentUser) await saveStateToCloud(window.fbCurrentUser);
+        }
+        localStorage.setItem(v3Key, '1');
+      }
+    } catch (e) { console.warn('V3 코인캐시백 보정 실패', e); }
+
+    // === 옛 거래내역 재분류 (1회 자동 실행) ===
+    try {
+      const migrationKey = 'fbReclassifiedV2_' + user.uid;
+      if (!localStorage.getItem(migrationKey) && window.state && window.state.platformData) {
+        let migrated = 0;
+        for (const yr of Object.keys(window.state.platformData)) {
+          const yearData = window.state.platformData[yr] || {};
+          for (const pid of Object.keys(yearData)) {
+            const txns = yearData[pid] || [];
+            for (const t of txns) {
+              if (!t || t.account !== '환불') continue;
+              const nm = (t.name || '') + ' ' + (t.memo || '');
+              if (/환불액|Refund Amount/i.test(nm)) {
+                t.account = '매출참고'; t.name = '매출 환불 (Refund Amount)'; migrated++;
+              } else if (/셀러바우처|Voucher Sponsored by Seller/i.test(nm)) {
+                t.account = '광고선전비'; t.name = '셀러부담 광고쿠폰 (Voucher Sponsored by Seller)'; migrated++;
+              } else if (/Voucher Sponsored/i.test(nm)) {
+                t.account = '매출참고'; t.name = '매출 환불 (Voucher Sponsored)'; migrated++;
+              } else if (/코인캐시백|Coin Cashback/i.test(nm)) {
+                t.account = '광고선전비'; t.name = '코인캐시백 (광고선전비 차감)';
+                t.amount = -Math.abs(t.amount); // 차감 처리
+                migrated++;
+              }
+            }
+          }
+        }
+        if (migrated > 0) {
+          console.log('[Firebase 재분류] ' + migrated + '건 거래 갱신 (환불 → 매출참고/광고선전비)');
+          if (typeof toast === 'function') toast('기존 거래 ' + migrated + '건 재분류 완료', 'ok');
+          if (window.fbCurrentUser) await saveStateToCloud(window.fbCurrentUser);
+        }
+        localStorage.setItem(migrationKey, '1');
+      }
+    } catch (e) { console.warn('재분류 마이그레이션 실패', e); }
+
     _isLoadingCloud = false;
     if (typeof window.renderDashboard === 'function') window.renderDashboard();
     if (typeof window.renderSettings === 'function') window.renderSettings();
