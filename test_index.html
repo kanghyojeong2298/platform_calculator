@@ -1705,7 +1705,7 @@ const SHOPEE_ITEM_MAP = [
   { kw:['Refund Amount'], account:'매출참고', label:'매출 환불 (Refund Amount)' },
   { kw:['Voucher Sponsored by Seller'], account:'광고선전비', label:'셀러부담 광고쿠폰 (Voucher Sponsored by Seller)' },
   { kw:['Voucher Sponsored'], account:'매출참고', label:'매출 환불 (Voucher Sponsored)' },
-  { kw:['Coin Cashback'], account:'광고선전비', label:'코인캐시백 (광고선전비 차감)', isDeduction:true },
+  { kw:['Coin Cashback'], account:'광고선전비', label:'코인캐시백', isDeduction:true },
   { kw:['Offline Adjustment'], account:'기타', label:'오프라인조정', isDeduction:true },
   { kw:['Rebate Provided by Shopee'], account:'기타', label:'쇼피 리베이트', isDeduction:true },
   { kw:['Products\' Price Paid by Buyer','Product Price Paid by Buyer'], account:'매출참고', label:'구매자 결제 상품가' },
@@ -11283,10 +11283,9 @@ window.fbInitDataLayer = async (user, isAdmin) => {
     const orig = window.saveState;
     window.saveState = function() { if (typeof orig === 'function') orig(); debounceSaveToCloud(window.fbCurrentUser); };
 
-    // === [V3] 코인캐시백 부호 보정 — 광고선전비로 옮겨진 코인캐시백이 양수로 남아있으면 음수로 변환 ===
+    // === [V3] 코인캐시백 부호 보정 — 매번 실행 (idempotent: 양수만 변환) ===
     try {
-      const v3Key = 'fbCoinCashbackSignFix_' + user.uid;
-      if (!localStorage.getItem(v3Key) && window.state && window.state.platformData) {
+      if (window.state && window.state.platformData) {
         let signFixed = 0;
         for (const yr of Object.keys(window.state.platformData)) {
           const yearData = window.state.platformData[yr] || {};
@@ -11296,10 +11295,10 @@ window.fbInitDataLayer = async (user, isAdmin) => {
               if (!t) continue;
               const nm = (t.name || '') + ' ' + (t.memo || '');
               // 코인캐시백 항목이고 amount가 양수면 음수로 변환 (차감 의미 반영)
-              if (/코인캐시백|Coin Cashback/i.test(nm) && t.amount > 0) {
-                t.amount = -Math.abs(t.amount);
+              if (/코인캐시백|Coin Cashback/i.test(nm) && (t.amount > 0 || t.name !== '코인캐시백')) {
+                if (t.amount > 0) t.amount = -Math.abs(t.amount);
                 if (t.account !== '광고선전비') t.account = '광고선전비';
-                if (!t.name.includes('차감')) t.name = '코인캐시백 (광고선전비 차감)';
+                if (t.name !== '코인캐시백') t.name = '코인캐시백';
                 signFixed++;
               }
             }
@@ -11310,14 +11309,12 @@ window.fbInitDataLayer = async (user, isAdmin) => {
           if (typeof toast === 'function') toast('코인캐시백 ' + signFixed + '건 차감 부호로 변환', 'ok');
           if (window.fbCurrentUser) await saveStateToCloud(window.fbCurrentUser);
         }
-        localStorage.setItem(v3Key, '1');
       }
     } catch (e) { console.warn('V3 코인캐시백 보정 실패', e); }
 
-    // === 옛 거래내역 재분류 (1회 자동 실행) ===
+    // === 옛 거래내역 재분류 — 매번 실행 (idempotent) ===
     try {
-      const migrationKey = 'fbReclassifiedV2_' + user.uid;
-      if (!localStorage.getItem(migrationKey) && window.state && window.state.platformData) {
+      if (window.state && window.state.platformData) {
         let migrated = 0;
         for (const yr of Object.keys(window.state.platformData)) {
           const yearData = window.state.platformData[yr] || {};
@@ -11333,7 +11330,7 @@ window.fbInitDataLayer = async (user, isAdmin) => {
               } else if (/Voucher Sponsored/i.test(nm)) {
                 t.account = '매출참고'; t.name = '매출 환불 (Voucher Sponsored)'; migrated++;
               } else if (/코인캐시백|Coin Cashback/i.test(nm)) {
-                t.account = '광고선전비'; t.name = '코인캐시백 (광고선전비 차감)';
+                t.account = '광고선전비'; t.name = '코인캐시백';
                 t.amount = -Math.abs(t.amount); // 차감 처리
                 migrated++;
               }
@@ -11345,7 +11342,6 @@ window.fbInitDataLayer = async (user, isAdmin) => {
           if (typeof toast === 'function') toast('기존 거래 ' + migrated + '건 재분류 완료', 'ok');
           if (window.fbCurrentUser) await saveStateToCloud(window.fbCurrentUser);
         }
-        localStorage.setItem(migrationKey, '1');
       }
     } catch (e) { console.warn('재분류 마이그레이션 실패', e); }
 
