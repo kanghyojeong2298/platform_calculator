@@ -511,7 +511,11 @@ const DEFAULT_FX_DATA = {
 
 
 const ACCOUNTS = ['지급수수료','광고선전비','물류비','매출세','환불','기타'];
-const ACCOUNT_CSS = { 지급수수료:'fee', 광고선전비:'ad', 물류비:'ship', 매출세:'tax', 환불:'refund', 기타:'etc', 매출참고:'rev' };
+// 화면 표시/엑셀 출력용 계정 (환불 제외 — 환불은 매출 환불로 분리됐고 비용으로 의미 없음)
+const DISPLAY_ACCOUNTS = ['지급수수료','광고선전비','물류비','매출세','매출환불','기타'];
+// 비용 합계용 — 매출환불 제외 (매출환불은 비용이 아님)
+const COST_ACCOUNTS = ['지급수수료','광고선전비','물류비','매출세','기타'];
+const ACCOUNT_CSS = { 지급수수료:'fee', 광고선전비:'ad', 물류비:'ship', 매출세:'tax', 환불:'refund', 기타:'etc', 매출참고:'rev', 매출환불:'refund' };
 
 const STORAGE_KEY = 'feeCalcData_v2';
 
@@ -871,28 +875,35 @@ function filterByPeriod(date) {
 
 function calcPlatformTotals(platformId) {
   const txns = (state.platformData[state.selectedYear]?.[platformId] || []).filter(t => filterByPeriod(t.date));
-  const sum = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, count: txns.length, lastUpdated: null, currencies: new Set() };
+  const sum = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, 매출환불:0, count: txns.length, lastUpdated: null, currencies: new Set() };
   for (const t of txns) {
     const krw = toKRW(t.amount, t.currency, t.date);
     if (krw == null) continue;
-    sum[t.account] = (sum[t.account] || 0) + krw;
+    // 매출참고 중 '매출 환불' 라벨 항목은 별도 집계 (매출환불)
+    const isMaeChul = (t.account === '매출참고' && /매출\s*환불|Refund Amount|Voucher Sponsored/i.test(t.name || ''));
+    if (isMaeChul) {
+      sum['매출환불'] = (sum['매출환불'] || 0) + krw;
+    } else {
+      sum[t.account] = (sum[t.account] || 0) + krw;
+    }
     sum.currencies.add(t.currency);
     if (!sum.lastUpdated || t.date > sum.lastUpdated) sum.lastUpdated = t.date;
   }
-  sum.totalCost = ACCOUNTS.reduce((s,a) => s + (sum[a] || 0), 0);
+  sum.totalCost = COST_ACCOUNTS.reduce((s,a) => s + (sum[a] || 0), 0);
   return sum;
 }
 
 function calcAllAccountTotals() {
-  const all = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, count:0 };
+  const all = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, 매출환불:0, count:0 };
   for (const p of PLATFORMS) {
     if (p.placeholder) continue;
     const t = calcPlatformTotals(p.id);
     ACCOUNTS.forEach(a => all[a] += t[a] || 0);
     all.매출참고 += t.매출참고 || 0;
+    all.매출환불 = (all.매출환불 || 0) + (t.매출환불 || 0);
     all.count += t.count;
   }
-  all.total = ACCOUNTS.reduce((s,a) => s + all[a], 0);
+  all.total = COST_ACCOUNTS.reduce((s,a) => s + all[a], 0);
   return all;
 }
 
@@ -938,7 +949,7 @@ function renderBanner() {
 function renderAccountPanel() {
   const all = calcAllAccountTotals();
   const grid = document.getElementById('account-grid');
-  grid.innerHTML = ACCOUNTS.map(a =>
+  grid.innerHTML = DISPLAY_ACCOUNTS.map(a =>
     '<div class="account-c ' + ACCOUNT_CSS[a] + '"><div class="account-l">' + a + '</div><div class="account-v">' + formatNum(all[a], 0) + '</div></div>'
   ).join('');
 }
@@ -994,13 +1005,13 @@ function renderPlatformGroups() {
 
   // Shopee 8개국
   const shopeePlatforms = PLATFORMS.filter(p => p.group === 'shopee');
-  let shopeeTotal = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, count:0 };
+  let shopeeTotal = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, 매출환불:0, count:0 };
   shopeePlatforms.forEach(p => {
     const t = calcPlatformTotals(p.id);
     Object.keys(shopeeTotal).forEach(k => shopeeTotal[k] += t[k] || 0);
     shopeeTotal.count += t.count;
   });
-  const shopeeAllTotal = ACCOUNTS.reduce((s,a) => s + shopeeTotal[a], 0);
+  const shopeeAllTotal = COST_ACCOUNTS.reduce((s,a) => s + shopeeTotal[a], 0);
   html += '<div class="group-h">Shopee 8개국 <span class="group-h-sub">주별 정산서 PDF · 통화 8종</span></div>';
   html += '<div class="card-grid">';
   shopeePlatforms.forEach(p => html += buildCard(p));
@@ -1022,13 +1033,13 @@ function renderPlatformGroups() {
   // Lazada 5개국 — Shopee와 동일 구조 (그룹 헤더 + 카드그리드 + 합계 카드)
   const lazadaPlatforms = PLATFORMS.filter(p => p.group === 'lazada');
   if (lazadaPlatforms.length) {
-    let lazadaTotal = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, count:0 };
+    let lazadaTotal = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, 매출환불:0, count:0 };
     lazadaPlatforms.forEach(p => {
       const t = calcPlatformTotals(p.id);
       Object.keys(lazadaTotal).forEach(k => lazadaTotal[k] += t[k] || 0);
       lazadaTotal.count += t.count;
     });
-    const lazadaAllTotal = ACCOUNTS.reduce((s,a) => s + lazadaTotal[a], 0);
+    const lazadaAllTotal = COST_ACCOUNTS.reduce((s,a) => s + lazadaTotal[a], 0);
     html += '<div class="group-h">Lazada 5개국 <span class="group-h-sub">동남아 5개국 · 통화 5종</span></div>';
     html += '<div class="card-grid">';
     lazadaPlatforms.forEach(p => html += buildCard(p));
@@ -1454,15 +1465,15 @@ function exportExcel() {
   cover.push(['· 일반 비용(지급수수료 등)으로 손금 처리, 자세한 내용은 「세금공제검토」 시트 참조']);
   cover.push([]);
   cover.push(['[ 플랫폼 / 카드별 합계 (KRW, 절대값) ]']);
-  cover.push(['카드','거래수','지급수수료','광고선전비','물류비','매출세','환불','기타','계']);
+  cover.push(['카드','거래수','지급수수료','광고선전비','물류비','매출세','매출환불','기타','계']);
 
   const platformSheets = [];
   for (const p of PLATFORMS) {
     if (p.placeholder) continue;
     const t = calcPlatformTotals(p.id);
     if (t.count === 0) continue;
-    const tot = ACCOUNTS.reduce((s,a) => s + t[a], 0);
-    cover.push([p.name, t.count, t.지급수수료, t.광고선전비, t.물류비, t.매출세, t.환불, t.기타, tot]);
+    const tot = COST_ACCOUNTS.reduce((s,a) => s + t[a], 0);
+    cover.push([p.name, t.count, t.지급수수료, t.광고선전비, t.물류비, t.매출세, t.매출환불, t.기타, tot]);
     platformSheets.push(p);
   }
   // 미접수 placeholder
@@ -1470,7 +1481,7 @@ function exportExcel() {
 
   const all = calcAllAccountTotals();
   cover.push([]);
-  cover.push(['전체 합계', all.count, all.지급수수료, all.광고선전비, all.물류비, all.매출세, all.환불, all.기타, all.total]);
+  cover.push(['전체 합계', all.count, all.지급수수료, all.광고선전비, all.물류비, all.매출세, all.매출환불, all.기타, all.total]);
   cover.push([]);
   cover.push(['[ 매출 참고 (비용 합계에 미포함) ]']);
   cover.push(['전체 매출 KRW', '', '', '', '', '', '', '', all.매출참고]);
@@ -3825,14 +3836,14 @@ window.exportExcel = function() {
   summary.push([]);
 
   summary.push(['[ 나라별 총 수수료 (KRW 환산 절대값) ]']);
-  summary.push(['플랫폼','국가','거래수','지급수수료','광고선전비','물류비','매출세','환불','기타','비용 합계','매출(참고)']);
+  summary.push(['플랫폼','국가','거래수','지급수수료','광고선전비','물류비','매출세','매출환불','기타','비용 합계','매출(참고)']);
 
   const byPlatform = {};
   for (const t of allTxns) {
     const k = t.platform.id;
     if (!byPlatform[k]) byPlatform[k] = {
       platform: t.platform, count: 0, currency: t.currency,
-      지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0
+      지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, 매출환불:0
     };
     byPlatform[k].count++;
     const krw = toKRW(t.amount, t.currency, t.date);
@@ -3841,23 +3852,23 @@ window.exportExcel = function() {
 
   let grandTotal = 0;
   let grandRev = 0;
-  const accSum = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0 };
+  const accSum = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출환불:0 };
   for (const p of PLATFORMS) {
     if (p.placeholder) continue;
     const s = byPlatform[p.id];
     if (!s) continue;
     const country = (CURRENCY_INFO[p.currency] && CURRENCY_INFO[p.currency].country) || '';
-    const cost = ACCOUNTS.reduce((sum,a) => sum + (s[a]||0), 0);
-    summary.push([p.name, country, s.count, s.지급수수료, s.광고선전비, s.물류비, s.매출세, s.환불, s.기타, cost, s.매출참고]);
+    const cost = COST_ACCOUNTS.reduce((sum,a) => sum + (s[a]||0), 0);
+    summary.push([p.name, country, s.count, s.지급수수료, s.광고선전비, s.물류비, s.매출세, s.매출환불, s.기타, cost, s.매출참고]);
     grandTotal += cost;
     grandRev += s.매출참고;
-    ACCOUNTS.forEach(a => accSum[a] += s[a]||0);
+    DISPLAY_ACCOUNTS.forEach(a => accSum[a] += s[a]||0);
   }
-  summary.push(['전체 합계','', allTxns.length, accSum.지급수수료, accSum.광고선전비, accSum.물류비, accSum.매출세, accSum.환불, accSum.기타, grandTotal, grandRev]);
+  summary.push(['전체 합계','', allTxns.length, accSum.지급수수료, accSum.광고선전비, accSum.물류비, accSum.매출세, accSum.매출환불, accSum.기타, grandTotal, grandRev]);
 
   summary.push([]);
   summary.push(['[ 회계 계정별 합계 (KRW) ]']);
-  ACCOUNTS.forEach(a => summary.push([a, accSum[a]]));
+  DISPLAY_ACCOUNTS.forEach(a => summary.push([a, accSum[a]]));
   summary.push(['전체 비용 합계', grandTotal]);
   summary.push(['전체 매출(참고)', grandRev]);
 
@@ -4565,14 +4576,14 @@ window.exportExcel = function() {
   summary.push(['「매출세」 항목은 모두 간접세이므로 외국납부세액공제 대상 아님 — 일반 비용으로 손금 처리']);
   summary.push([]);
   summary.push(['[ 나라별 총 수수료 (KRW) ]']);
-  summary.push(['플랫폼','국가','거래수','지급수수료','광고선전비','물류비','매출세','환불','기타','비용 합계','매출(참고)']);
+  summary.push(['플랫폼','국가','거래수','지급수수료','광고선전비','물류비','매출세','매출환불','기타','비용 합계','매출(참고)']);
 
   const byPlatform = {};
   for (const t of allTxns) {
     const k = t.platform.id;
     if (!byPlatform[k]) byPlatform[k] = {
       platform: t.platform, count: 0, currency: t.currency,
-      지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0
+      지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출참고:0, 매출환불:0
     };
     byPlatform[k].count++;
     const krw = toKRW(t.amount, t.currency, t.date);
@@ -4581,19 +4592,19 @@ window.exportExcel = function() {
 
   let grandTotal = 0;
   let grandRev = 0;
-  const accSum = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0 };
+  const accSum = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 환불:0, 기타:0, 매출환불:0 };
   for (const p of PLATFORMS) {
     if (p.placeholder) continue;
     const s = byPlatform[p.id];
     if (!s) continue;
     const country = (CURRENCY_INFO[p.currency] && CURRENCY_INFO[p.currency].country) || '';
-    const cost = ACCOUNTS.reduce((sum,a) => sum + (s[a]||0), 0);
-    summary.push([p.name, country, s.count, s.지급수수료, s.광고선전비, s.물류비, s.매출세, s.환불, s.기타, cost, s.매출참고]);
+    const cost = COST_ACCOUNTS.reduce((sum,a) => sum + (s[a]||0), 0);
+    summary.push([p.name, country, s.count, s.지급수수료, s.광고선전비, s.물류비, s.매출세, s.매출환불, s.기타, cost, s.매출참고]);
     grandTotal += cost;
     grandRev += s.매출참고;
-    ACCOUNTS.forEach(a => accSum[a] += s[a]||0);
+    DISPLAY_ACCOUNTS.forEach(a => accSum[a] += s[a]||0);
   }
-  summary.push(['전체 합계','', allTxns.length, accSum.지급수수료, accSum.광고선전비, accSum.물류비, accSum.매출세, accSum.환불, accSum.기타, grandTotal, grandRev]);
+  summary.push(['전체 합계','', allTxns.length, accSum.지급수수료, accSum.광고선전비, accSum.물류비, accSum.매출세, accSum.매출환불, accSum.기타, grandTotal, grandRev]);
 
   const sumSheet = XLSX.utils.aoa_to_sheet(summary);
   sumSheet['!cols'] = [{wch:18},{wch:12},{wch:8},{wch:13},{wch:13},{wch:13},{wch:13},{wch:13},{wch:13},{wch:14},{wch:14}];
