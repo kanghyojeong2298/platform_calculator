@@ -41,7 +41,7 @@
   .period-row { display: flex; gap: 12px; align-items: center; padding: 10px 24px; flex-wrap: wrap; font-size: 12px; color: #6b7280; }
   .period-row .label { font-weight: 600; }
 
-  /* 회계 계정별 합계 패널 */
+  /* 비용 계정별 합계 패널 */
   .account-panel { padding: 8px 24px 4px; }
   .account-h { font-size: 11px; color: #6b7280; font-weight: 600; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
   .account-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
@@ -3855,7 +3855,7 @@ window.exportExcel = function() {
   summary.push(['전체 합계','', allTxns.length, accSum.지급수수료, accSum.광고선전비, accSum.물류비, accSum.매출세, accSum.매출환불, accSum.기타, grandTotal, grandRev]);
 
   summary.push([]);
-  summary.push(['[ 회계 계정별 합계 (KRW) ]']);
+  summary.push(['[ 비용 계정별 합계 (KRW) ]']);
   DISPLAY_ACCOUNTS.forEach(a => summary.push([a, accSum[a]]));
   summary.push(['전체 비용 합계', grandTotal]);
   summary.push(['전체 매출(참고)', grandRev]);
@@ -6049,7 +6049,7 @@ window.exportExcel = function() {
     }
   }
 
-  // 회계 계정별 합계 — 환불 행 제외 (매출환불은 별도 표기)
+  // 비용 계정별 합계 — 환불 행 제외 (매출환불은 별도 표기)
   const accSum = { 지급수수료:0, 광고선전비:0, 물류비:0, 매출세:0, 기타:0 };
   for (const t of allTxns) {
     const krw = toKRW(t.amount, t.currency, t.date);
@@ -6203,6 +6203,24 @@ window.exportExcel = function() {
   const codeSh = XLSX.utils.aoa_to_sheet(codeMap);
   codeSh['!cols'] = [{wch:14},{wch:14},{wch:30}];
   XLSX.utils.book_append_sheet(wb, codeSh, '계정코드매핑');
+
+  // ── 모든 시트의 숫자 셀에 천단위 쉼표 포맷 일괄 적용 ──
+  for (const shName of wb.SheetNames) {
+    const sh = wb.Sheets[shName];
+    if (!sh || !sh['!ref']) continue;
+    const range = XLSX.utils.decode_range(sh['!ref']);
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const addr = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = sh[addr];
+        if (cell && cell.t === 'n' && typeof cell.v === 'number') {
+          // 정수면 #,##0 / 소수면 #,##0.## (환율값 보존)
+          const isInt = Number.isInteger(cell.v);
+          cell.z = isInt ? '#,##0' : '#,##0.####';
+        }
+      }
+    }
+  }
 
   const fname = '플랫폼수수료_통합보고서_' + year + '_' + new Date().toISOString().substring(0,10) + '.xlsx';
   XLSX.writeFile(wb, fname);
