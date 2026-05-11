@@ -1747,8 +1747,8 @@ function parseShopeeIncomeStatement(pages) {
       const amount = parseFloat(m[2].replace(/,/g, ''));
       if (isNaN(amount) || itemName.length < 3) continue;
       const cls = classifyShopeeItem(itemName);
-      // 사용자 요청: Income(매출참고) 항목은 거래내역에 표시하지 않음 — 비용 항목만 표시
-      if (cls.account === '매출참고') continue;
+      // 매출참고/매출환불 항목도 거래내역엔 그대로 저장 (조회 시 보이도록).
+      // 비용 합계에는 COST_ACCOUNTS만 합산되므로 영향 없고, 매출환불 합계는 라벨 매칭으로 분리됨.
 
       // 사용자 요청: Shipping Rebate, Offline Adjustment 등 차감 항목은 부호를 반전해서 저장
       // (양수 입력 → 음수로 저장 → 소계에서 자동 차감)
@@ -10908,33 +10908,8 @@ sendBtn.addEventListener('click', async () => {
   sendBtn.disabled = true;
   sendBtn.textContent = '확인 중...';
   try {
-    // === 화이트리스트 체크 (관리자 + approvedEmails + 승인된 members) ===
-    let allowed = false;
-    if (email === ADMIN_EMAIL) {
-      allowed = true;
-    } else {
-      try {
-        const ap = await db.collection('approvedEmails').doc(email).get();
-        if (ap.exists) allowed = true;
-      } catch (e) { console.warn('approvedEmails 조회 실패', e); }
-      if (!allowed) {
-        try {
-          const ms = await db.collection('members').get();
-          ms.forEach(d => {
-            const data = d.data();
-            if (data && data.email && data.email.toLowerCase() === email && data.status === 'approved') {
-              allowed = true;
-            }
-          });
-        } catch (e) { console.warn('members 조회 실패', e); }
-      }
-    }
-    if (!allowed) {
-      showMsg('등록되지 않은 이메일입니다. 관리자(' + ADMIN_EMAIL + ')에게 등록을 요청해주세요.', 'error');
-      sendBtn.disabled = false;
-      sendBtn.textContent = '로그인';
-      return;
-    }
+    // === 화이트리스트 미적용 — 누구나 로그인 가능 (이메일별 데이터 격리는 유지) ===
+    // 관리자(ADMIN_EMAIL)만 관리 화면 접근 가능. 일반 이메일은 자신의 데이터만 사용.
 
     // === Firebase 이메일/비밀번호 로그인 ===
     try {
