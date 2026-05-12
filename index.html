@@ -805,7 +805,14 @@ function handleFxFile(file, replaceCurrency) {
           const arr = dailyByCurrency[cur][month];
           totalDays += arr.length;
           const avg = arr.reduce((s,v) => s+v, 0) / arr.length;
-          state.fxData[year].rates[cur][month] = +avg.toFixed(2);
+          // VND는 smbs.or.kr에서 100동(VND) 단위로 제공되므로 1동 기준으로 자동 정규화
+          // (예: 5.77 → 0.0577). 이미 정규화된 값(<1)은 그대로 둠.
+          if (cur === 'VND') {
+            const normalized = (avg > 1) ? avg / 100 : avg;
+            state.fxData[year].rates[cur][month] = +normalized.toFixed(4);
+          } else {
+            state.fxData[year].rates[cur][month] = +avg.toFixed(2);
+          }
         }
         state.fxData[year].sources[cur] = { filename: file.name, uploaded: today, dailyCount: totalDays, monthCount };
       }
@@ -11307,6 +11314,38 @@ window.fbInitDataLayer = async (user, isAdmin) => {
         }
       }
     } catch (e) { console.warn('재분류 마이그레이션 실패', e); }
+
+    // === VND 환율 정규화 — 기존 데이터에 raw 값(>1) 있으면 /100 적용 ===
+    try {
+      if (window.state && window.state.fxData) {
+        let fxFixed = 0;
+        for (const yr of Object.keys(window.state.fxData)) {
+          const yd = window.state.fxData[yr];
+          if (!yd || !yd.rates || !yd.rates.VND) continue;
+          for (const m of Object.keys(yd.rates.VND)) {
+            const v = yd.rates.VND[m];
+            if (typeof v === 'number' && v > 1) {
+              yd.rates.VND[m] = +(v / 100).toFixed(4);
+              fxFixed++;
+            }
+          }
+        }
+        if (fxFixed > 0) {
+          console.log('[VND 정규화] ' + fxFixed + '건 환율 /100 적용');
+          if (typeof toast === 'function') toast('VND 환율 ' + fxFixed + '건 정규화 (/100)', 'ok');
+          // FX는 shared 컬렉션 — 관리자만 저장 가능
+          if (window.fbIsAdmin) {
+            try {
+              await db.collection('shared').doc('fxData').set({
+                fxData: window.state.fxData,
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                updatedBy: window.fbCurrentUser ? window.fbCurrentUser.email : 'migration'
+              });
+            } catch (e) { console.warn('[VND 정규화] shared 저장 실패', e); }
+          }
+        }
+      }
+    } catch (e) { console.warn('VND 환율 정규화 실패', e); }
 
     _isLoadingCloud = false;
     if (typeof window.renderDashboard === 'function') window.renderDashboard();
